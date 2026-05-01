@@ -1,1 +1,1 @@
-# agent-project-template
+# k8s for ML Engineers
