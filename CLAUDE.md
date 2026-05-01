@@ -1,102 +1,59 @@
 # CLAUDE.md
 
-AI Agent 프로젝트를 빠르게 시작하기 위한 템플릿입니다.
-FastAPI 백엔드 + Next.js 프론트엔드 + LangGraph 에이전트 구조를 기본으로 합니다.
+ML 엔지니어를 위한 Kubernetes 교육 자료 프로젝트입니다.
+모든 챕터는 **실습을 포함**하며, **ML 워크로드 관점**(모델 서빙, 학습 잡, 파이프라인 등)을 유지합니다.
 
-## 기술 스택
+> 📌 **상세 커리큘럼은 [docs/study-roadmap.md](docs/study-roadmap.md)를 Single Source of Truth로 사용합니다.**
+> 챕터 작성/수정 시 항상 이 파일을 먼저 확인하세요.
 
-- **Backend**: FastAPI, LangGraph, LangChain, Pydantic, uvicorn
-- **Frontend**: Next.js (App Router), TypeScript, Tailwind CSS
-- **AI/LLM**: Anthropic Claude, OpenAI (langchain-anthropic, langchain-openai)
-- **Package manager**: uv (Python), npm (Node)
-- **Linter/Formatter**: ruff
-- **Test**: pytest
+---
 
 ## 디렉토리 구조
 
 ```
 .
-├── backend/app/          # FastAPI 앱
-│   ├── main.py           # 앱 진입점 (CORS, /health)
-│   ├── agents/           # LangGraph 에이전트
-│   ├── api/              # API 라우터
-│   └── utils/
-│       ├── config_loader.py  # YAML 설정 로더
-│       └── path.py           # 프로젝트 경로 상수
-├── frontend/             # Next.js 앱
-├── configs/
-│   └── prompts/          # 프롬프트 템플릿
-├── data/
-│   ├── raw/
-│   ├── intermediate/
-│   └── processed/
-├── notebooks/            # Jupyter 실험 노트북
-├── docs/                 # 문서 및 PRD 템플릿
-└── tests/                # pytest 테스트
+├── course/               # 교육 콘텐츠 (Phase 단위 챕터)
+├── docs/
+│   └── study-roadmap.md  # 학습 로드맵 (커리큘럼의 기준 문서)
+├── data/                 # 실습용 샘플 데이터 (필요 시)
+└── img/                  # 다이어그램, 스크린샷
 ```
 
-## 개발 워크플로우
+`course/` 내부 구조는 `docs/study-roadmap.md`를 참고하여 작업할 때마다 작성/확장합니다. 미리 골격을 만들어두지 않습니다.
 
-### 환경 설정
+---
 
-```bash
-# Python 환경 (uv)
-uv sync --extra dev
+## 챕터 작성 원칙
 
-# 환경 변수
-cp backend/.env.example backend/.env
-# backend/.env에 API 키 입력
-```
+- 각 챕터는 `README.md`(이론) + `labs/`(실습 가이드) + `manifests/`(YAML)로 분리합니다.
+- `README.md` 최상단에 **학습 목표**를 명시합니다.
+- 모든 챕터에 실습을 **1개 이상** 포함합니다.
+- ML 엔지니어 관점("왜 ML 엔지니어에게 필요한가")을 항상 유지합니다.
+- 한국어 "~합니다" 체로 작성합니다 ([docs/study-roadmap.md](docs/study-roadmap.md)와 동일 톤).
+- 매니페스트는 ML 워크로드 예시(모델 서빙, 학습 잡 등)로 작성하고, 핵심 필드에 주석을 답니다.
 
-### 백엔드 실행
+---
 
-```bash
-uvicorn backend.app.main:app --reload
-```
+## 실습 환경
 
-### 프론트엔드 실행
+- **기본**: minikube (GUI 대시보드 내장, 입문자 친화적)
+- **대안**: kind, k3d (필요 시 챕터에서 따로 안내)
+- **GPU 실습**: Phase 4부터. 로컬 불가 시 GCP/AWS 임시 클러스터 사용 (실습 후 클러스터 삭제 필수)
+- **OS**: WSL2 / macOS / Linux
+- **kubectl**: 최신 stable 버전 권장
 
-```bash
-cd frontend && npm install && npm run dev
-```
+---
 
-### 테스트
+## 새 챕터 작성 워크플로우
 
-```bash
-pytest tests/ -v
-```
+1. [docs/study-roadmap.md](docs/study-roadmap.md)에서 해당 Phase의 학습 내용을 확인합니다.
+2. `course/<phase>/` 아래에 표준 구조(`README.md`, `labs/`, `manifests/`)로 작성합니다.
+3. minikube에서 매니페스트 동작을 검증합니다.
+4. `README.md`에 실습 명령과 **예상 출력**을 함께 적습니다.
 
-### 린트/포맷
+---
 
-```bash
-ruff check .
-ruff format .
-```
+## 참고 자료
 
-## Claude 에이전트 목록
-
-`.claude/agents/` 에 프리셋 에이전트가 준비되어 있습니다.
-
-### Dev 에이전트
-
-| 에이전트 | 용도 |
-|---------|------|
-| `development-planner` | ROADMAP.md 작성 및 개발 계획 수립 |
-| `nextjs-app-developer` | Next.js App Router 구조 설계 및 구현 |
-| `starter-cleaner` | 스타터킷 보일러플레이트 정리 |
-| `ui-markup-specialist` | UI 컴포넌트 마크업 및 스타일링 |
-| `code-reviewer` | 코드 리뷰 |
-
-### Docs 에이전트
-
-| 에이전트 | 용도 |
-|---------|------|
-| `prd-generator` | PRD 문서 생성 |
-| `prd-validator` | PRD 기술적 타당성 검증 |
-
-## 코딩 컨벤션
-
-- Python: ruff 설정 준수 (line-length=105, target=py312)
-- 비동기: FastAPI 엔드포인트는 `async def` 사용
-- 설정: YAML 파일은 `configs/`에, 경로 상수는 `backend/app/utils/path.py`에서 관리
-- 환경 변수: `python-dotenv` 사용, `.env` 파일은 git에 커밋하지 않음
+- **로드맵**: [docs/study-roadmap.md](docs/study-roadmap.md)
+- **공식 문서**: kubernetes.io, kubeflow.org
