@@ -1,0 +1,41 @@
+# Phase 1 / 01-cluster-setup — 학습용 첫 Pod
+# 이 매니페스트는 K8s가 Pod을 어떻게 띄우는지 관찰하기 위한 것입니다.
+# Phase 0에서 만든 sentiment-api 이미지는 모델 다운로드 때문에 첫 기동이 느려
+# Pod 라이프사이클 학습용으로는 가벼운 python:3.12-slim을 사용합니다.
+# 04-serve-classification-model 토픽에서 sentiment-api 이미지로 교체합니다.
+
+apiVersion: v1                  # Pod 같은 핵심 리소스는 core API(v1) 그룹에 속합니다
+kind: Pod                       # 가장 작은 배포 단위. 1 컨테이너 = 1 Pod 권장
+metadata:
+  name: first-pod               # 같은 namespace 안에서 유일한 이름이어야 합니다
+  labels:
+    app: first-pod              # 다음 토픽의 Service selector가 이 Label을 사용합니다
+    phase: "1"                  # 학습용 분류 라벨. 운영에서는 환경/팀/소유자를 적습니다
+spec:
+  # Pod 안의 컨테이너들. 입문 단계에서는 1개만 둡니다.
+  containers:
+    - name: hello                       # 컨테이너 이름. kubectl logs/exec에서 사용합니다
+      image: python:3.12-slim           # 가벼운 베이스. 모델 없이 Pod 동작만 확인합니다
+      imagePullPolicy: IfNotPresent     # 같은 태그면 다시 받지 않습니다 (학습 환경 빠르게)
+      command: ["sh", "-c"]             # ENTRYPOINT 대체. K8s에서는 command가 ENTRYPOINT를 덮어씁니다
+      args:
+        - |
+          echo "[ML] hello from K8s — Phase 1 / 01-cluster-setup";
+          echo "[ML] 이 자리는 04-serve-classification-model에서 sentiment-api 컨테이너로 교체됩니다.";
+          # sleep으로 컨테이너를 살려둬야 kubectl exec / logs 실습이 가능합니다.
+          # 실제 모델 서빙에서는 uvicorn 같은 장기 실행 프로세스가 이 자리를 채웁니다.
+          sleep 3600
+      # 자원 명시는 입문이라도 빼지 않습니다. 빼면 노드 자원이 어떤 Pod에 얼마나 갈지
+      # 스케줄러가 알 수 없어 Phase 2 이후 ResourceQuota·HPA가 모두 어긋납니다.
+      resources:
+        requests:                # 스케줄러가 노드 선택 시 보장하는 최소 자원
+          cpu: "50m"             # 0.05 vCPU. echo + sleep만 하므로 매우 작게 잡습니다
+          memory: "64Mi"
+        limits:                  # 컨테이너가 절대 넘을 수 없는 상한. 넘으면 OOMKilled / 스로틀
+          cpu: "200m"
+          memory: "128Mi"
+  # Pod이 종료될 때 SIGTERM 후 SIGKILL까지 줄 시간(초). 모델 서빙은 30~60이 일반적입니다.
+  terminationGracePeriodSeconds: 10
+  # 재시작 정책. Pod 단독으로는 Always가 기본이며, 다음 토픽에서 ReplicaSet/Deployment를 쓰면
+  # Pod 자체보다 ReplicaSet이 새 Pod을 띄우는 방식으로 복구가 일어납니다.
+  restartPolicy: Always
