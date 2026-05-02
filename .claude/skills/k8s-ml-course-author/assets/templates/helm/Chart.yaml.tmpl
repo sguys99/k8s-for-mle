@@ -1,0 +1,26 @@
+# Helm Chart 메타데이터
+apiVersion: v2
+name: {{CHART_NAME}}                       # 예: ml-serving
+description: {{CHART_DESCRIPTION}}        # 예: ML model serving on Kubernetes
+type: application
+version: 0.1.0                             # Chart 자체 버전 (SemVer)
+appVersion: "1.0.0"                        # 배포되는 앱 버전
+
+# 의존 차트 (선택)
+# dependencies:
+# - name: kube-prometheus-stack
+#   version: "65.x.x"
+#   repository: https://prometheus-community.github.io/helm-charts
+#   condition: monitoring.enabled
+
+maintainers:
+- name: {{MAINTAINER_NAME}}
+  email: {{MAINTAINER_EMAIL}}
+
+keywords:
+- ml
+- serving
+- inference
+- huggingface
+
+icon: https://kubernetes.io/images/favicon.png

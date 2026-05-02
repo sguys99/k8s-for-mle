@@ -1,0 +1,82 @@
+# vLLM 서빙 Deployment 템플릿
+# OpenAI 호환 API 제공 (/v1/chat/completions, /v1/completions, /v1/models)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-{{MODEL_SLUG}}                # 예: vllm-phi2
+  labels:
+    app: vllm-{{MODEL_SLUG}}
+    component: llm-serving
+spec:
+  replicas: 1                              # vLLM은 보통 GPU당 1 Pod
+  selector:
+    matchLabels:
+      app: vllm-{{MODEL_SLUG}}
+  template:
+    metadata:
+      labels:
+        app: vllm-{{MODEL_SLUG}}
+        component: llm-serving
+    spec:
+      # GPU 노드 선택 (클라우드별 라벨 다름)
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-tesla-t4   # 또는 nvidia.com/gpu.product=...
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        args:
+        - --model={{HF_MODEL_ID}}          # 예: microsoft/phi-2, Qwen/Qwen2.5-1.5B-Instruct
+        - --gpu-memory-utilization=0.9
+        - --max-model-len={{MAX_MODEL_LEN}}                 # 예: 4096
+        - --port=8000
+        # - --quantization=awq             # AWQ 양자화 모델 사용 시
+        # - --tensor-parallel-size=2       # 멀티 GPU 시
+        ports:
+        - name: http
+          containerPort: 8000
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-secret
+              key: HF_TOKEN
+              optional: true
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: 1
+          limits:
+            cpu: "4"
+            memory: "16Gi"
+            nvidia.com/gpu: 1
+        # 모델 다운로드 + 로딩 시간이 길 수 있음 (수 분)
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          failureThreshold: 60             # 60 * 10s = 최대 10분
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 10
+        volumeMounts:
+        - name: model-cache
+          mountPath: /root/.cache/huggingface
+        - name: shm
+          mountPath: /dev/shm
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: vllm-{{MODEL_SLUG}}-cache
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi                   # CUDA IPC 공유 메모리

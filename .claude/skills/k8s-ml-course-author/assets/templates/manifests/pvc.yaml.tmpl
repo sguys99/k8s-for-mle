@@ -1,0 +1,16 @@
+# 모델 가중치 캐시용 PVC 템플릿
+# 여러 Pod이 같은 모델을 공유하려면 ReadWriteMany 지원하는 StorageClass 필요
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{APP_NAME}}-model-cache
+  labels:
+    app: {{APP_NAME}}
+spec:
+  accessModes:
+  - ReadWriteOnce                          # 단일 Pod 사용. 여러 Pod 공유는 ReadWriteMany
+  resources:
+    requests:
+      storage: {{STORAGE_SIZE}}           # 예: "20Gi" (LLM은 10~50Gi)
+  # storageClassName 미지정 시 기본 클래스 사용
+  # storageClassName: standard-rwo

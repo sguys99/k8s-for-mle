@@ -1,0 +1,162 @@
+"""RAG API 템플릿 (캡스톤용).
+
+흐름:
+1. 사용자 질의 받음
+2. 임베딩 → Qdrant에서 top-k 문서 검색
+3. 검색 문서 + 질의를 vLLM(OpenAI 호환)에 전달
+4. 응답 + 출처 반환
+
+환경 변수:
+- QDRANT_URL          : 예) http://qdrant:6333
+- QDRANT_COLLECTION   : 예) docs
+- EMBED_MODEL         : 예) BAAI/bge-small-en
+- LLM_BASE_URL        : 예) http://vllm-svc:8000/v1
+- LLM_MODEL           : 예) microsoft/phi-2
+- TOP_K_DEFAULT       : 기본 검색 개수 (기본 5)
+"""
+from __future__ import annotations
+
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from openai import OpenAI
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from pydantic import BaseModel
+from qdrant_client import QdrantClient
+from sentence_transformers import SentenceTransformer
+from starlette.responses import Response
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("rag")
+
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "docs")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://vllm-svc:8000/v1")
+LLM_MODEL = os.getenv("LLM_MODEL", "microsoft/phi-2")
+TOP_K_DEFAULT = int(os.getenv("TOP_K_DEFAULT", "5"))
+
+CHAT_COUNT = Counter("rag_chat_total", "Total /chat requests", ["status"])
+CHAT_LATENCY = Histogram("rag_chat_latency_seconds", "End-to-end /chat latency")
+RETRIEVE_LATENCY = Histogram("rag_retrieve_latency_seconds", "Vector search latency")
+LLM_LATENCY = Histogram("rag_llm_latency_seconds", "LLM generation latency")
+
+_state: dict[str, Any] = {}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Loading embedding model: %s", EMBED_MODEL)
+    _state["embedder"] = SentenceTransformer(EMBED_MODEL)
+    _state["qdrant"] = QdrantClient(url=QDRANT_URL)
+    _state["llm"] = OpenAI(base_url=LLM_BASE_URL, api_key="dummy")
+    _state["ready"] = True
+    logger.info("RAG API ready")
+    yield
+
+
+app = FastAPI(title="RAG Chatbot", lifespan=lifespan)
+
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[Message]
+    top_k: int | None = None
+
+
+class Source(BaseModel):
+    doc_id: str
+    score: float
+    snippet: str
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    sources: list[Source]
+
+
+def _retrieve(query: str, top_k: int) -> list[Source]:
+    with RETRIEVE_LATENCY.time():
+        vec = _state["embedder"].encode(query).tolist()
+        hits = _state["qdrant"].search(
+            collection_name=QDRANT_COLLECTION,
+            query_vector=vec,
+            limit=top_k,
+        )
+    return [
+        Source(
+            doc_id=str(h.id),
+            score=float(h.score),
+            snippet=(h.payload or {}).get("text", "")[:300],
+        )
+        for h in hits
+    ]
+
+
+def _build_prompt(user_query: str, sources: list[Source]) -> list[dict[str, str]]:
+    context = "\n\n".join(f"[{s.doc_id}] {s.snippet}" for s in sources)
+    system = (
+        "You are a helpful assistant. Answer the question using ONLY the context below. "
+        "If the answer is not in the context, say you don't know.\n\n"
+        f"Context:\n{context}"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_query},
+    ]
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    if not _state.get("ready"):
+        CHAT_COUNT.labels(status="not_ready").inc()
+        raise HTTPException(status_code=503, detail="Service not ready")
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="messages cannot be empty")
+
+    user_query = req.messages[-1].content
+    top_k = req.top_k or TOP_K_DEFAULT
+
+    with CHAT_LATENCY.time():
+        try:
+            sources = _retrieve(user_query, top_k)
+            messages = _build_prompt(user_query, sources)
+            with LLM_LATENCY.time():
+                completion = _state["llm"].chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=messages,
+                    temperature=0.2,
+                    max_tokens=512,
+                )
+            answer = completion.choices[0].message.content or ""
+        except Exception as exc:
+            logger.exception("Chat failed")
+            CHAT_COUNT.labels(status="error").inc()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    CHAT_COUNT.labels(status="ok").inc()
+    return ChatResponse(answer=answer, sources=sources)
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    if not _state.get("ready"):
+        raise HTTPException(status_code=503, detail="Not ready")
+    return {"status": "ready"}
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

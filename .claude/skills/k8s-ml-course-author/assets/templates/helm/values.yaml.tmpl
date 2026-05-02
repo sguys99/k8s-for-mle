@@ -1,0 +1,92 @@
+# Helm values 템플릿 — ML 서빙 차트의 기본 설정
+# 환경별 override는 values-dev.yaml, values-prod.yaml 등으로 분리
+
+# ===== 모델 설정 =====
+model:
+  name: {{MODEL_NAME}}                     # 예: cardiffnlp/twitter-roberta-base-sentiment
+  version: "v1"
+  # 추론 파라미터
+  maxLength: 512
+  batchSize: 32
+
+# ===== 이미지 =====
+image:
+  repository: {{IMAGE_REPOSITORY}}         # 예: ghcr.io/myorg/sentiment
+  tag: "0.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+# - name: ghcr-credentials
+
+# ===== Deployment =====
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# GPU 설정 (사용 시 enabled: true)
+gpu:
+  enabled: false
+  count: 1
+  nodeSelector: {}
+    # cloud.google.com/gke-accelerator: nvidia-tesla-t4
+
+# ===== Service =====
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+# ===== Ingress =====
+ingress:
+  enabled: false
+  className: nginx
+  host: model.example.com
+  path: /
+  tls: false
+
+# ===== Probes =====
+probes:
+  startup:
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    failureThreshold: 30
+  liveness:
+    periodSeconds: 30
+  readiness:
+    periodSeconds: 10
+
+# ===== ConfigMap / Secret =====
+config:
+  logLevel: "INFO"
+  topK: 5
+
+secrets:
+  hfToken: ""                              # Helm install 시 --set secrets.hfToken=$HF_TOKEN
+
+# ===== HPA =====
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# ===== 모니터링 =====
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels:
+      release: prom                        # kube-prometheus-stack 기본 셀렉터
+
+# ===== 모델 가중치 PVC =====
+persistence:
+  enabled: false
+  size: 20Gi
+  storageClass: ""                         # 비우면 기본 클래스
+  accessMode: ReadWriteOnce

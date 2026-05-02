@@ -1,0 +1,42 @@
+# 정기 평가/재학습 CronJob 템플릿
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{CRONJOB_NAME}}                   # 예: daily-eval
+  labels:
+    app: {{APP_NAME}}
+spec:
+  schedule: "{{CRON_EXPRESSION}}"         # 예: "0 3 * * *" (매일 새벽 3시)
+  timeZone: "Asia/Seoul"                   # K8s 1.27+ 지원
+  concurrencyPolicy: Forbid                # 이전 실행이 끝나기 전 새로 안 시작
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400       # 1일 후 자동 정리
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: eval
+            image: {{IMAGE}}
+            command: ["python", "evaluate.py"]
+            args:
+            - "--dataset=/data/eval.jsonl"
+            - "--model={{MODEL_NAME}}"
+            - "--output=/data/eval-results-$(date +%Y%m%d).json"
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+            volumeMounts:
+            - name: data
+              mountPath: /data
+          volumes:
+          - name: data
+            persistentVolumeClaim:
+              claimName: {{DATA_PVC}}

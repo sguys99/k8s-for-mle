@@ -1,0 +1,17 @@
+# Service 템플릿 — ClusterIP가 기본, 학습용으로 NodePort 사용 가능
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{APP_NAME}}
+  labels:
+    app: {{APP_NAME}}
+spec:
+  type: ClusterIP                         # 외부 노출이 필요하면 NodePort 또는 LoadBalancer
+  selector:
+    app: {{APP_NAME}}                     # Deployment의 Pod label과 반드시 일치
+  ports:
+  - name: http
+    port: 80                              # 클러스터 내부 호출용
+    targetPort: 8000                      # 컨테이너 포트
+    # NodePort 사용 시 주석 해제 (30000~32767)
+    # nodePort: 30080

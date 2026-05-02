@@ -1,0 +1,46 @@
+# 배치 추론 Job 템플릿
+# 한 번 실행되고 완료. 재시도는 backoffLimit으로 제어.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{JOB_NAME}}                       # 예: batch-inference-2026-05-01
+  labels:
+    app: {{APP_NAME}}
+    component: batch
+spec:
+  backoffLimit: 3                          # 실패 시 3회 재시도 후 포기
+  ttlSecondsAfterFinished: 3600            # 완료 후 1시간 뒤 자동 정리
+  activeDeadlineSeconds: 7200              # 최대 2시간 실행 (방어막)
+  template:
+    metadata:
+      labels:
+        app: {{APP_NAME}}
+        component: batch
+    spec:
+      restartPolicy: OnFailure             # 컨테이너 실패 시만 재시작
+      containers:
+      - name: batch
+        image: {{IMAGE}}
+        command: ["python", "batch_inference.py"]
+        args:
+        - "--input=/data/input.jsonl"
+        - "--output=/data/output.jsonl"
+        env:
+        - name: MODEL_NAME
+          value: "{{MODEL_NAME}}"
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "4"
+            memory: "8Gi"
+            # GPU 배치 추론 시 주석 해제
+            # nvidia.com/gpu: 1
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{DATA_PVC}}          # 예: batch-data-pvc

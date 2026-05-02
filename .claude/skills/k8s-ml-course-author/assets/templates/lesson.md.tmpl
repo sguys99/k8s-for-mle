@@ -1,0 +1,114 @@
+# {{TOPIC_TITLE}}
+
+> **Phase**: {{PHASE_NUMBER}} — {{PHASE_NAME}}
+> **소요 시간**: {{ESTIMATED_HOURS}}시간
+> **선수 학습**: {{PREREQUISITES}}
+
+## 학습 목표
+
+이 챕터를 마치면 다음을 할 수 있습니다.
+
+- {{LEARNING_OBJECTIVE_1}}
+- {{LEARNING_OBJECTIVE_2}}
+- {{LEARNING_OBJECTIVE_3}}
+
+## 왜 ML 엔지니어에게 필요한가
+
+{{ML_MOTIVATION_PARAGRAPH — 한 문단으로 이 토픽이 모델 서빙/학습/RAG에 어떻게 쓰이는지 설명}}
+
+## 1. 핵심 개념
+
+### 1-1. {{CONCEPT_1_TITLE}}
+
+{{이론 설명}}
+
+```yaml
+# 예시 매니페스트 또는 명령
+{{EXAMPLE_SNIPPET}}
+```
+
+### 1-2. {{CONCEPT_2_TITLE}}
+
+{{이론 설명}}
+
+> 💡 **팁**: {{비공식적인 팁이나 베스트 프랙티스}}
+
+## 2. 실습
+
+### 2-1. 사전 준비
+
+```bash
+# 클러스터 확인
+kubectl cluster-info
+kubectl get nodes
+
+# 필요한 도구
+{{REQUIRED_TOOLS}}
+```
+
+### 2-2. 매니페스트 적용
+
+```bash
+kubectl apply -f manifests/
+```
+
+매니페스트 설명은 [manifests/README.md](manifests/) 참고. 핵심 부분만 짚으면:
+
+```yaml
+# manifests/{{MAIN_MANIFEST}}.yaml 발췌
+{{KEY_LINES_WITH_KOREAN_COMMENTS}}
+```
+
+### 2-3. 동작 확인
+
+```bash
+{{VERIFICATION_COMMANDS}}
+```
+
+**예상 출력:**
+
+```
+{{EXPECTED_OUTPUT}}
+```
+
+### 2-4. 직접 호출
+
+```bash
+{{API_CALL_COMMAND}}
+```
+
+**예상 응답:**
+
+```json
+{{EXPECTED_RESPONSE}}
+```
+
+## 3. 검증 체크리스트
+
+다음 항목을 모두 확인했다면 이 챕터를 마쳤다고 볼 수 있습니다.
+
+- [ ] {{CHECKLIST_ITEM_1}}
+- [ ] {{CHECKLIST_ITEM_2}}
+- [ ] {{CHECKLIST_ITEM_3}}
+
+## 4. 정리
+
+```bash
+kubectl delete -f manifests/
+{{ADDITIONAL_CLEANUP}}
+```
+
+## 🚨 자주 하는 실수
+
+1. **{{MISTAKE_1_TITLE}}** — {{이유와 해결}}
+2. **{{MISTAKE_2_TITLE}}** — {{이유와 해결}}
+3. **{{MISTAKE_3_TITLE}}** — {{이유와 해결}}
+
+## 더 알아보기
+
+- [{{REFERENCE_TITLE_1}}]({{REFERENCE_URL_1}})
+- [{{REFERENCE_TITLE_2}}]({{REFERENCE_URL_2}})
+
+## 다음 챕터
+
+➡️ [{{NEXT_TOPIC_TITLE}}](../{{NEXT_TOPIC_SLUG}}/lesson.md)

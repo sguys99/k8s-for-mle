@@ -1,0 +1,24 @@
+# 추론 하이퍼파라미터 ConfigMap
+# Pod에서 envFrom 또는 volumeMount로 마운트
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{APP_NAME}}-config
+  labels:
+    app: {{APP_NAME}}
+data:
+  # 환경 변수로 주입할 항목 (envFrom)
+  MAX_LENGTH: "{{MAX_LENGTH}}"            # 예: "512"
+  TOP_K: "{{TOP_K}}"                      # 예: "5"
+  BATCH_SIZE: "{{BATCH_SIZE}}"            # 예: "32"
+  LOG_LEVEL: "INFO"
+
+  # 파일로 마운트할 항목 (volumeMount with subPath 또는 전체)
+  inference.yaml: |
+    model:
+      name: {{MODEL_NAME}}
+      max_length: {{MAX_LENGTH}}
+      top_k: {{TOP_K}}
+    serving:
+      batch_size: {{BATCH_SIZE}}
+      timeout_seconds: 30

@@ -1,0 +1,38 @@
+# KServe InferenceService 템플릿
+# 사전 조건: KServe + Knative 설치 (kserve quick_install.sh 권장)
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: {{MODEL_NAME_SLUG}}                # 예: sentiment
+  labels:
+    app: {{MODEL_NAME_SLUG}}
+spec:
+  predictor:
+    minReplicas: {{MIN_REPLICAS}}          # 0이면 scale-to-zero (cold start 주의)
+    maxReplicas: {{MAX_REPLICAS}}
+    # HuggingFace 빌트인 runtime 사용 예시
+    model:
+      modelFormat:
+        name: huggingface                  # 또는 sklearn, pytorch, tensorflow, triton
+      args:
+      - --model_id={{HF_MODEL_ID}}         # 예: cardiffnlp/twitter-roberta-base-sentiment
+      # - --task=text-classification       # 명시적 task 지정 시
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
+          # GPU 사용 시 주석 해제
+          # nvidia.com/gpu: 1
+      # private 모델은 HF 토큰 필요
+      env:
+      - name: HF_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: hf-secret
+            key: HF_TOKEN
+            optional: true
+  # Canary 배포 예시 (트래픽 90% v1, 10% v2)
+  # canaryTrafficPercent: 10

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# 부하 테스트 스크립트 (hey 사용)
+# 설치: https://github.com/rakyll/hey
+#   - macOS: brew install hey
+#   - Go:    go install github.com/rakyll/hey@latest
+
+set -euo pipefail
+
+# ===== 설정 =====
+TARGET_URL="${TARGET_URL:-http://localhost:8000/predict}"  # 서비스 URL
+DURATION="${DURATION:-60s}"                                 # 테스트 시간
+CONCURRENCY="${CONCURRENCY:-50}"                            # 동시 요청 수
+PAYLOAD='{"text":"This product is amazing!"}'               # 요청 본문
+# ================
+
+echo "=== Load Test ==="
+echo "Target:      $TARGET_URL"
+echo "Duration:    $DURATION"
+echo "Concurrency: $CONCURRENCY"
+echo "Payload:     $PAYLOAD"
+echo ""
+
+# 사전 점검
+if ! command -v hey >/dev/null 2>&1; then
+  echo "Error: 'hey' is not installed."
+  echo "Install: brew install hey  (or)  go install github.com/rakyll/hey@latest"
+  exit 1
+fi
+
+# 워밍업 (모델 로딩 대기)
+echo "Warming up..."
+for i in $(seq 1 5); do
+  curl -s -o /dev/null -w "  attempt $i: %{http_code}\n" \
+    -X POST "$TARGET_URL" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" || true
+  sleep 1
+done
+echo ""
+
+# 본 테스트
+echo "Running test..."
+hey \
+  -z "$DURATION" \
+  -c "$CONCURRENCY" \
+  -m POST \
+  -T "application/json" \
+  -d "$PAYLOAD" \
+  "$TARGET_URL"
+
+echo ""
+echo "=== Done ==="
+echo "Tip: 다른 터미널에서 다음 명령으로 HPA 동작을 관찰하세요"
+echo "  watch kubectl get hpa,pods"

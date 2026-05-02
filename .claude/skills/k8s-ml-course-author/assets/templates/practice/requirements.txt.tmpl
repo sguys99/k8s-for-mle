@@ -1,0 +1,21 @@
+# FastAPI 모델 서빙 기본 의존성
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.0
+
+# Prometheus 메트릭 노출
+prometheus-client==0.21.0
+
+# HuggingFace 모델 로딩/추론
+transformers==4.45.0
+torch==2.4.1
+# CPU 전용은 위 대신 아래 (이미지 크기 ↓):
+# torch==2.4.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+
+# 토크나이저 가속
+tokenizers==0.20.0
+
+# RAG 캡스톤용 (해당 시 추가)
+# qdrant-client==1.12.0
+# sentence-transformers==3.1.0
+# openai==1.51.0  # vLLM OpenAI 호환 API 호출용

@@ -1,0 +1,47 @@
+# Phase {{PHASE_NUMBER}} — {{PHASE_NAME}}
+
+> {{PHASE_TAGLINE — 한 줄 요약}}
+>
+> **권장 기간**: {{DURATION}}
+> **선수 학습**: {{PREREQUISITES}}
+
+## 이 Phase에서 배우는 것
+
+{{PHASE_OVERVIEW — 2~3문장}}
+
+## 학습 목표
+
+- {{PHASE_GOAL_1}}
+- {{PHASE_GOAL_2}}
+- {{PHASE_GOAL_3}}
+
+## 챕터 구성
+
+| 챕터 | 제목 | 핵심 내용 |
+|------|------|----------|
+| [{{NN_1}}](./{{NN_1}}-{{SLUG_1}}/) | {{TITLE_1}} | {{SUMMARY_1}} |
+| [{{NN_2}}](./{{NN_2}}-{{SLUG_2}}/) | {{TITLE_2}} | {{SUMMARY_2}} |
+| [{{NN_3}}](./{{NN_3}}-{{SLUG_3}}/) | {{TITLE_3}} | {{SUMMARY_3}} |
+
+## 권장 진행 순서
+
+1. 위 표 순서대로 진행하세요. 각 챕터는 이전 챕터의 결과물을 사용합니다.
+2. 막히면 `kubectl describe`와 `kubectl logs`부터 보세요.
+3. 모든 챕터의 매니페스트는 `kubectl apply --dry-run=client -f` 로 검증 가능합니다.
+
+## 환경 요구사항
+
+- Kubernetes 클러스터 (kind / minikube / k3d 권장, v1.28+)
+- `kubectl` v1.28+
+- Docker
+- {{ADDITIONAL_REQUIREMENTS — GPU, Helm 등}}
+
+## 마치면 할 수 있는 것
+
+이 Phase를 완료하면 다음 캡스톤 격 실습을 수행할 수 있습니다.
+
+> {{CAPSTONE_DESCRIPTION_FOR_THIS_PHASE}}
+
+## 다음 Phase
+
+➡️ [Phase {{NEXT_PHASE_NUMBER}} — {{NEXT_PHASE_NAME}}](../phase-{{NEXT_PHASE_NUMBER}}-{{NEXT_PHASE_SLUG}}/)

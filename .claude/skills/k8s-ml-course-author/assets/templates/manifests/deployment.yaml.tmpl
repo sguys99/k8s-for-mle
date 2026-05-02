@@ -1,0 +1,82 @@
+# ML 모델 서빙용 Deployment 템플릿
+# 사용 시 {{ }} 자리표시자를 채우고, GPU 옵션은 필요할 때만 주석 해제하세요.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{APP_NAME}}                     # 예: sentiment, vllm-phi2
+  labels:
+    app: {{APP_NAME}}
+    component: model-serving
+spec:
+  replicas: {{REPLICAS}}                  # 입문은 2~3 권장
+  selector:
+    matchLabels:
+      app: {{APP_NAME}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0                   # 모델 로딩이 느리므로 가용성 우선
+  template:
+    metadata:
+      labels:
+        app: {{APP_NAME}}
+        component: model-serving
+    spec:
+      # GPU가 필요한 경우 주석 해제
+      # nodeSelector:
+      #   cloud.google.com/gke-accelerator: nvidia-tesla-t4
+      # tolerations:
+      # - key: nvidia.com/gpu
+      #   operator: Exists
+      #   effect: NoSchedule
+      containers:
+      - name: {{APP_NAME}}
+        image: {{IMAGE}}                  # 예: ghcr.io/myorg/sentiment:0.1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8000
+        env:
+        - name: MODEL_NAME
+          value: "{{MODEL_NAME}}"         # 예: cardiffnlp/twitter-roberta-base-sentiment
+        # ConfigMap/Secret이 있으면 envFrom으로 주입
+        # envFrom:
+        # - configMapRef:
+        #     name: {{APP_NAME}}-config
+        # - secretRef:
+        #     name: {{APP_NAME}}-secrets
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+            # GPU가 필요한 경우 주석 해제
+            # nvidia.com/gpu: 1
+        # 모델 로딩 시간을 고려해 readiness 우선
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          failureThreshold: 30            # 30 * 5s = 최대 150s 모델 로딩 허용
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          periodSeconds: 10
+        # 모델 가중치를 PVC에 캐싱하는 경우 주석 해제
+        # volumeMounts:
+        # - name: model-cache
+        #   mountPath: /root/.cache/huggingface
+      # volumes:
+      # - name: model-cache
+      #   persistentVolumeClaim:
+      #     claimName: {{APP_NAME}}-model-cache
