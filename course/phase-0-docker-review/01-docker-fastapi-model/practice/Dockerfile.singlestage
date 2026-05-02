@@ -1,0 +1,25 @@
+# 비교용 단일 stage Dockerfile — 의도적으로 비효율 패턴을 남겼습니다.
+# 멀티스테이지(Dockerfile)와 빌드 결과 이미지 크기를 비교하는 용도입니다.
+#
+# 학습 포인트:
+#   1) python:3.12 (full)을 베이스로 써서 이미지가 무겁습니다.
+#   2) build-essential이 최종 이미지에 그대로 남습니다.
+#   3) COPY . 으로 코드와 requirements를 한 번에 복사해 캐시 효율이 떨어집니다.
+
+FROM python:3.12
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential
+
+# 의도적 안티패턴: requirements와 코드를 함께 COPY합니다.
+# 코드 한 줄만 바꿔도 pip install이 처음부터 다시 실행됩니다.
+COPY . .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+EXPOSE 8000
+
+# 루트 유저로 실행됩니다(보안상 권장되지 않음).
+CMD ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "8000"]

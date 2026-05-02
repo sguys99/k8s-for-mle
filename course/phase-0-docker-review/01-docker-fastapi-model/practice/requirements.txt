@@ -1,0 +1,17 @@
+# FastAPI 모델 서빙 기본 의존성
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.0
+
+# Prometheus 메트릭 노출 — Phase 3에서 ServiceMonitor로 수집합니다.
+prometheus-client==0.21.0
+
+# HuggingFace 모델 로딩/추론
+transformers==4.45.0
+tokenizers==0.20.0
+
+# CPU 전용 PyTorch 휠 — 이미지 크기를 줄이기 위해 CPU 빌드를 사용합니다.
+# GPU 실습(Phase 4)에서는 아래 한 줄을 주석 처리하고 대신 베이스 이미지를
+# nvidia/cuda 계열로 바꾸어 사용합니다.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1+cpu

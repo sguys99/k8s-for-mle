@@ -1,0 +1,33 @@
+# 빌드 컨텍스트에서 제외 — 이미지 크기와 빌드 시간을 줄입니다.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# 캐시
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 잠재적 모델 가중치 캐시(이미지에 굽지 말고 PVC로 마운트할 예정)
+models/
+*.bin
+*.safetensors
+
+# 에디터/VCS
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+
+# 도커 자체
+Dockerfile*
+.dockerignore

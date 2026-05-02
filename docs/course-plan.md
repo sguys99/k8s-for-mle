@@ -21,11 +21,11 @@
 
 ## Phase 0. 사전 점검 (3–5일)
 
-- [ ] **01-docker-fastapi-model** — Docker 점검 + FastAPI로 `cardiffnlp/twitter-roberta-base-sentiment` 감싸기
-  - [ ] lesson.md
-  - [ ] Dockerfile + FastAPI 앱 코드
-  - [ ] labs/
-  - [ ] `docker run` 로컬 검증
+- [x] **01-docker-fastapi-model** — Docker 점검 + FastAPI로 `cardiffnlp/twitter-roberta-base-sentiment` 감싸기
+  - [x] lesson.md
+  - [x] Dockerfile + FastAPI 앱 코드
+  - [x] labs/
+  - [x] `docker run` 로컬 검증
 
 ---
 
