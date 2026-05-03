@@ -1,0 +1,201 @@
+# sentiment-api-prod.yaml — sentiment-api 운영 배포 (prod namespace, 모든 resources 명시)
+#
+# sentiment-api-dev.yaml 와 같은 5개 자원(ConfigMap / Secret / PVC / Deployment / Service) 을
+# prod namespace 에 옮긴 버전입니다. 핵심 차이:
+#   ・ replicas: 2          (가용성 — Pod 한 개 죽어도 트래픽 유지)
+#   ・ resources 명시        (LimitRange default 에 의존하지 않음 — 운영 SLA 정책)
+#   ・ APP_VERSION: v1-prod (/ready 응답으로 dev 와 즉시 구분)
+#   ・ LOG_LEVEL: INFO       (dev 의 DEBUG 와 차등)
+#   ・ batch_size: 32        (dev 의 16 보다 큰 batch — 처리량 우선)
+#   ・ PVC 1Gi 그대로 두지만 prod-quota 의 requests.storage 200Gi 안에서 충분
+#
+# ─ prod 운영 원칙 (lesson.md 1-5 절과 짝) ─
+#   "prod 는 LimitRange default 에 의존하지 않는다" — default 는 매니페스트 누락 시의 안전망일 뿐,
+#   운영 자산은 항상 resources 를 명시해 SLA 와 자원 사용을 예측 가능하게 만듭니다.
+#
+# ─ Pod 1개당 자원 (quota 사용량 계산) ─
+#   regular containers 합 (main 만): requests cpu 500m / memory 1Gi, limits cpu 1 / memory 2Gi
+#   init container max:                 requests cpu 200m / memory 500Mi, limits cpu 800m / memory 1500Mi
+#   Pod effective request (quota 합산용): max(regular sum, init max) = max(500m, 200m) = 500m cpu
+#   replicas: 2 → prod quota requests.cpu used = 1000m / 8000m
+#
+# ─ prod-limitrange 와의 관계 ─
+#   prod limitrange Container max: cpu 8 / memory 16Gi → 본 매니페스트의 main(limits cpu 1) 충분히 통과
+#   maxLimitRequestRatio cpu: "4" → main 1000m / 500m = 2 ✓, init 800m / 200m = 4 ✓
+
+# ─ 1) ConfigMap ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentiment-api-config
+  namespace: prod
+  labels:
+    app: sentiment-api
+    env: prod
+    phase: "2"
+    topic: "05-namespace-quota"
+data:
+  MODEL_NAME: "cardiffnlp/twitter-roberta-base-sentiment"
+  APP_VERSION: "v1-prod"
+  LOG_LEVEL: "INFO"
+  HF_HOME: "/cache"
+  inference.yaml: |
+    model:
+      name: cardiffnlp/twitter-roberta-base-sentiment
+      max_length: 128
+      top_k: 1
+    serving:
+      batch_size: 32                      # prod 는 큰 batch — 처리량 우선
+      timeout_seconds: 60
+---
+# ─ 2) Secret ─────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sentiment-api-secrets
+  namespace: prod
+  labels:
+    app: sentiment-api
+    env: prod
+type: Opaque
+stringData:
+  HF_TOKEN: "hf_REPLACE_ME_WITH_REAL_TOKEN"
+---
+# ─ 3) PVC ────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache-prod
+  namespace: prod
+  labels:
+    app: sentiment-api
+    env: prod
+spec:
+  accessModes:
+    - ReadWriteOnce                        # minikube hostPath 한계 — replicas: 2 가 같은 노드에 있으면 공유 가능
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 2Gi                         # prod 는 모델 가중치 + 추가 메타파일까지 여유
+---
+# ─ 4) Deployment ─────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api
+  namespace: prod
+  labels:
+    app: sentiment-api
+    env: prod
+    phase: "2"
+    topic: "05-namespace-quota"
+spec:
+  replicas: 2                              # 가용성 — 1 Pod 죽어도 Service 가 다른 Pod 로 라우팅
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: sentiment-api
+  template:
+    metadata:
+      labels:
+        app: sentiment-api
+        env: prod
+    spec:
+      initContainers:
+        - name: model-downloader
+          image: sentiment-api:v1
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: sentiment-api-config
+            - secretRef:
+                name: sentiment-api-secrets
+          command: ["python", "-c"]
+          args:
+            - |
+              import os
+              from huggingface_hub import snapshot_download
+              repo_id = os.environ["MODEL_NAME"]
+              cache_dir = os.environ["HF_HOME"] + "/hub"
+              print(f"[init] caching {repo_id} -> {cache_dir}")
+              snapshot_download(repo_id=repo_id, cache_dir=cache_dir)
+              print("[init] done")
+          volumeMounts:
+            - name: model-cache
+              mountPath: /cache
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "500Mi"
+            limits:
+              cpu: "800m"                  # ratio 4 — prod-limitrange maxLimitRequestRatio 만족
+              memory: "1500Mi"
+      containers:
+        - name: app
+          image: sentiment-api:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: sentiment-api-config
+            - secretRef:
+                name: sentiment-api-secrets
+          volumeMounts:
+            - name: model-cache
+              mountPath: /cache
+            - name: inference-config
+              mountPath: /etc/inference/inference.yaml
+              subPath: inference.yaml
+              readOnly: true
+          # 운영 자산은 resources 명시. LimitRange default 에 의존하지 않음.
+          resources:
+            requests:
+              cpu: "500m"                  # SLA 보장량 — HPA 의 기준 (Phase 3)
+              memory: "1Gi"
+            limits:
+              cpu: "1"                     # ratio 2 — burst 여유 적당히
+              memory: "2Gi"
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 2
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-prod
+        - name: inference-config
+          configMap:
+            name: sentiment-api-config
+            items:
+              - key: inference.yaml
+                path: inference.yaml
+      terminationGracePeriodSeconds: 30
+---
+# ─ 5) Service ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api
+  namespace: prod
+  labels:
+    app: sentiment-api
+    env: prod
+spec:
+  type: ClusterIP
+  selector:
+    app: sentiment-api                     # prod Service 는 prod 의 Pod 만 라우팅 (selector 는 namespace 단위)
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

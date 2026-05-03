@@ -1,0 +1,40 @@
+# prod-limitrange.yaml — prod 네임스페이스의 Pod·Container 자원 정책 (LimitRange)
+#
+# dev-limitrange.yaml 와 같은 5개 필드를 쓰지만 값이 다릅니다.
+# 핵심 철학:
+#   ・ default / defaultRequest 가 dev 보다 큽니다 — 운영 SLA 가 걸린 컨테이너는
+#     매니페스트 누락이 있어도 안전한 기본값으로 떠야 하기 때문 (안전한 default).
+#   ・ max 가 dev 보다 큽니다 — 큰 모델 (예: 7B 파라미터) 도 prod 에서는 통과해야 함.
+#   ・ min / maxLimitRequestRatio 는 dev 와 동일 — 노드 자원 보호 정책은 환경 무관.
+#
+# 운영 권장: prod 의 모든 매니페스트는 resources 를 명시적으로 적습니다 (sentiment-api-prod.yaml 참조).
+# LimitRange 의 default 에 의존하지 마세요 (자주 하는 실수 의식). default 는 어디까지나
+# "누락 시 안전망" 이지 "운영 표준" 이 아닙니다.
+
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: prod-limits
+  namespace: prod
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"                  # CPU 1 코어 — dev 의 2배. 운영 SLA 컨테이너의 안전한 limits 기본값
+        memory: 2Gi               # 메모리 2Gi — dev 의 4배. 모델 로딩 + 추론 메모리 확보
+      defaultRequest:
+        cpu: 500m                 # CPU 0.5 코어 — burst 여유 = 1 - 0.5 = 0.5
+        memory: 1Gi               # 메모리 1Gi
+      max:
+        cpu: "8"                  # CPU 8 코어까지 — 큰 모델 추론 허용
+        memory: 16Gi              # 메모리 16Gi 까지
+      min:
+        cpu: 100m                 # 운영은 dev 보다 약간 큰 최소치 — 너무 작은 컨테이너의 비효율 방지
+        memory: 128Mi
+      maxLimitRequestRatio:
+        cpu: "4"                  # dev 와 동일 — burst 정책은 환경 무관
+
+    - type: Pod
+      max:
+        cpu: "8"                  # 한 Pod 의 합 ≤ 8 — sidecar (Envoy, log shipper 등) 합산 고려
+        memory: 16Gi

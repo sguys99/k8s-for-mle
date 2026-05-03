@@ -1,0 +1,54 @@
+# dev-limitrange.yaml — dev 네임스페이스의 Pod·Container 자원 정책 (LimitRange)
+#
+# LimitRange 는 한 namespace 안의 개별 Pod / Container 에 대한 자원 정책을 강제합니다.
+# ResourceQuota 가 "총량 천장" 이라면 LimitRange 는 "한 그릇의 최대·최소 + 빈 그릇 기본값"
+# 입니다. 둘은 항상 한 쌍으로 운영합니다 (자주 하는 실수 2번 참고).
+#
+# ─ 5개 핵심 필드 ─
+#   ・ default              : limits 가 비어 있을 때 자동으로 채워지는 값 (limits 기본값)
+#   ・ defaultRequest       : requests 가 비어 있을 때 자동으로 채워지는 값 (requests 기본값)
+#   ・ max                  : 명시한 limits/requests 의 최대 허용치 — 초과 시 admission 거절
+#   ・ min                  : 명시한 limits/requests 의 최소 허용치 — 미만 시 admission 거절
+#   ・ maxLimitRequestRatio : limit / request 비율 상한 — 과도한 burst 방지
+#
+# ─ 왜 default 와 defaultRequest 가 둘 다 필요한가 ─
+#   default(=limits) 만 있고 defaultRequest 가 없으면, K8s 는 requests = limits 로 간주합니다.
+#   그러면 burst 여유가 사라지고 노드 자원이 limits 기준으로 미리 잠겨 클러스터 활용도가 떨어집니다.
+#   defaultRequest 를 별도로 두면 "보장량(requests) 은 작게, 최대치(limits) 는 크게" 가 가능해집니다.
+#
+# ─ 본 매니페스트 시연 시나리오 ─
+#   sentiment-api-dev.yaml 에서 컨테이너 한쪽의 resources 를 의도적으로 비워두면,
+#   admission 에서 본 LimitRange 가 default / defaultRequest 로 채워줍니다.
+#   `kubectl get pod -n dev <name> -o jsonpath='{.spec.containers[0].resources}'` 로 확인 가능.
+
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: dev-limits
+  namespace: dev                  # LimitRange 도 namespaced — 반드시 namespace 명시
+spec:
+  limits:
+    # ── 타입 1: Container 단위 정책 ──
+    # Pod 안의 각 컨테이너에 적용. ML 추론 컨테이너 1개 = 1 항목.
+    - type: Container
+      default:                    # limits 가 비어 있는 컨테이너의 기본 limits
+        cpu: 500m                 # CPU 0.5 코어
+        memory: 512Mi             # 메모리 512MiB
+      defaultRequest:             # requests 가 비어 있는 컨테이너의 기본 requests (보장량)
+        cpu: 200m                 # CPU 0.2 코어 — burst 여유 = 500m - 200m = 300m
+        memory: 256Mi             # 메모리 256MiB
+      max:                        # 명시한 값의 상한 — 모델 가중치 큰 LLM 은 이 max 에 막혀 dev 배포 불가 → 의도된 격리
+        cpu: "2"                  # CPU 2 코어까지
+        memory: 4Gi               # 메모리 4Gi 까지
+      min:                        # 명시한 값의 하한 — 너무 작은 값(0 가까이) 으로 노드를 가득 채우는 것 방지
+        cpu: 50m                  # CPU 최소 0.05 코어
+        memory: 64Mi              # 메모리 최소 64MiB
+      maxLimitRequestRatio:       # limit / request 비율 상한 — burst 폭주 방지
+        cpu: "4"                  # 예: request 200m 이면 limit 800m 까지만 허용 (4배 burst)
+
+    # ── 타입 2: Pod 단위 정책 ──
+    # Pod 전체 (모든 컨테이너 합) 의 max 만 정의. sidecar 가 늘어나도 Pod 합이 노드를 잠식하지 않게.
+    - type: Pod
+      max:
+        cpu: "2"                  # 한 Pod 의 모든 컨테이너 CPU 합 ≤ 2
+        memory: 4Gi               # 한 Pod 의 모든 컨테이너 메모리 합 ≤ 4Gi

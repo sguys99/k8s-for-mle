@@ -1,0 +1,49 @@
+# oversize-pod.yaml — dev-quota 한도 초과 거절 시연 전용 Pod
+#
+# 본 Pod 는 정상 동작을 의도하지 않습니다. 의도된 거절(`Forbidden: exceeded quota`) 메시지를
+# 학습자가 직접 보는 것이 목적입니다 (labs 5 단계).
+#
+# ─ 거절 시나리오 ─
+#   적용 시점: sentiment-api-dev.yaml 가 이미 적용된 상태
+#   ① sentiment-api-dev (1 replica) 가 dev-quota.requests.cpu 를 200m 사용 중
+#      (LimitRange defaultRequest 로 자동 채워진 값)
+#   ② 본 Pod 가 추가로 requests.cpu=2 (= 2000m) 를 요구
+#   ③ 합 = 200m + 2000m = 2200m > dev-quota 한도 2000m → admission 거절
+#
+#   ⚠ 단, sentiment-api-dev 가 적용되지 않은 상태(=quota used 가 0) 에서 적용하면
+#      2000m ≤ 2000m 으로 거절되지 않고 통과해 버립니다 (quota 는 strict-greater 가 아닌
+#      현재 used + new > hard 일 때만 거절). 따라서 labs 는 sentiment-api-dev 적용 → 본 Pod 순서를 지킵니다.
+#
+# ─ 예상 거절 메시지 ─
+#   Error from server (Forbidden): error when creating "manifests/oversize-pod.yaml":
+#     pods "oversize-pod" is forbidden: exceeded quota: dev-quota,
+#     requested: requests.cpu=2, used: requests.cpu=200m, limited: requests.cpu=2
+#
+# ─ LimitRange admission 은 통과하는 이유 ─
+#   ・ requests.cpu=2 == Container max(2)               ✓ pass (max 는 inclusive)
+#   ・ requests.memory=1Gi <= Container max(4Gi)        ✓ pass
+#   ・ ratio = limits.cpu(2) / requests.cpu(2) = 1 ≤ 4 ✓ pass
+#   → LimitRange 단계는 통과. ResourceQuota 단계에서 거절됩니다.
+#   이를 통해 LimitRange 와 ResourceQuota 가 어느 단계에서 어떤 역할을 하는지 분리하여 학습합니다.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oversize-pod
+  namespace: dev
+  labels:
+    app: oversize-demo
+    env: dev
+    purpose: quota-rejection-demo         # 정리 시 `kubectl delete pod -l purpose=quota-rejection-demo -n dev` 로 일괄 삭제
+spec:
+  restartPolicy: Never                     # 거절 시연 후 자동 재시작 없음 (실패 → 그대로 머무름)
+  containers:
+    - name: hog                            # "자원 점유자" 의미
+      image: registry.k8s.io/pause:3.9     # 가장 가벼운 이미지 — 실제 동작 없이 자원 요청만 시연
+      resources:
+        requests:
+          cpu: "2"                         # ← 핵심: 단일 컨테이너로 dev quota 전체(2 vCPU) 요청
+          memory: "1Gi"
+        limits:
+          cpu: "2"                         # ratio = 2/2 = 1 ≤ 4 → LimitRange 통과
+          memory: "1Gi"

@@ -1,0 +1,57 @@
+# dev-quota.yaml — dev 네임스페이스의 자원 총량 한도 (ResourceQuota)
+#
+# ResourceQuota 는 한 namespace 의 자원 사용 총량 상한선을 admission 에서 강제합니다.
+# 이 매니페스트가 적용되면 dev 안의 모든 Pod 의 requests / limits 합이 hard 값을
+# 초과할 수 없으며, 초과 시 새 Pod 생성이 admission 단계에서 거절됩니다
+# (`Error from server (Forbidden): ... exceeded quota`).
+#
+# ─ 본 토픽의 4 카테고리 분배 ─
+#   ① compute        : requests.cpu / requests.memory / limits.cpu / limits.memory
+#   ② extended       : requests.nvidia.com/gpu        (GPU 는 extended resource)
+#   ③ storage        : persistentvolumeclaims        (개수 제한)
+#   ④ object count   : count/<resource>.<group>      (혼잡도 / etcd 부담 제어)
+#
+# ─ 함정 모음 ─
+#   ・ Quota 적용 시점에 이미 떠 있는 Pod 는 영향받지 않습니다 (자주 하는 실수 1번).
+#     Quota 적용 후 새로 생성되는 Pod 부터 합산됩니다.
+#   ・ Quota 만 걸고 LimitRange 를 안 걸면, requests 가 비어 있는 Pod 가 admission
+#     단계에서 전부 거절됩니다 (자주 하는 실수 2번). dev-limitrange.yaml 와 함께 적용하세요.
+#   ・ requests.nvidia.com/gpu 는 minikube 에는 GPU 노드가 없으므로 quota 객체에
+#     "등록은 되지만 used 는 항상 0" 입니다. 실제 검증은 Phase 4 GPU 토픽에서.
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: dev                  # ResourceQuota 는 namespaced — 반드시 namespace 명시
+spec:
+  hard:
+    # ── ① compute (CPU / 메모리) ──
+    # request 합 = 스케줄러가 노드를 고를 때 보는 값. 작게 두면 실험은 가능하나 동시 Pod 수 제한.
+    # dev 는 일부러 작게(2 vCPU) 잡습니다 — 학습자가 oversize-pod.yaml 로 한도 초과를
+    # 단일 Pod 로 직접 시연할 수 있도록 하기 위함입니다 (labs 5 단계).
+    requests.cpu: "2"             # dev 전체에서 동시에 요청할 수 있는 CPU 합 2 vCPU
+    requests.memory: 4Gi          # 메모리 요청 합 4Gi
+    # limit 합 = 컨테이너가 burst 로 쓸 수 있는 최대치 합. burst 여유 = limit - request.
+    limits.cpu: "4"               # CPU limit 합 — request 의 2배 = 평균 2배 burst 허용
+    limits.memory: 8Gi            # 메모리 limit 합 — OOMKilled 직전까지 burst 허용
+
+    # ── ② extended resource (GPU) ──
+    # GPU 는 K8s 의 표준 자원이 아니라 NVIDIA Device Plugin 이 등록하는 extended resource 입니다.
+    # 본 토픽 (minikube) 에서는 노드에 GPU 가 없어 used 가 항상 0 으로 표시됩니다.
+    # quota 자체는 정상 등록되며, Phase 4 GPU 토픽에서 실제로 used 가 채워지는 것을 검증합니다.
+    requests.nvidia.com/gpu: "1"  # dev 전체에서 GPU 1장까지 사용 가능 (실험·디버깅용)
+
+    # ── ③ storage ──
+    persistentvolumeclaims: "5"   # dev 안에서 만들 수 있는 PVC 개수 — 학습자가 무한 PVC 를 만들지 않도록
+    requests.storage: 50Gi        # PVC requests.storage 합 — minikube hostpath 디스크 보호
+
+    # ── ④ object count ──
+    # count/<resource>.<group> 형태. group 이 core 면 .group 생략 가능 (services, configmaps 등).
+    # Deployment / Service / ConfigMap / Secret 의 무한 생성을 막아 etcd / API Server 부담 제어.
+    count/deployments.apps: "10"
+    count/services: "10"
+    count/configmaps: "10"
+    count/secrets: "10"
+    count/jobs.batch: "10"
+    count/cronjobs.batch: "5"

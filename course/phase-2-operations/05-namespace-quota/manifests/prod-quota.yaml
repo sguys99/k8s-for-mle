@@ -1,0 +1,47 @@
+# prod-quota.yaml — prod 네임스페이스의 자원 총량 한도 (ResourceQuota)
+#
+# dev-quota.yaml 의 약 4배 크기로 산정합니다. 환경별 차등의 표준 비율은
+# 보통 dev:staging:prod = 1:2:4 또는 1:1:4 입니다. 본 토픽에서는 1:?:4 로
+# 두고 staging 은 학습자가 직접 정하도록 비워둡니다.
+# (dev requests.cpu=2 → prod requests.cpu=8 = 정확히 4배)
+#
+# ─ 왜 prod 가 dev 보다 큰가 ─
+#   ① replicas: 2 이상의 추론 서빙 (가용성)
+#   ② SLA 를 위한 burst 여유 (request 대비 limit 의 격차)
+#   ③ HPA (Phase 3) 가 부하 증가 시 Pod 를 늘릴 헤드룸
+#   ④ GPU 멀티 디바이스 (Phase 4 의 다중 모델 서빙)
+#
+# 운영 권장: prod 쿼터는 노드 캐파시티의 80% 정도로 두어 노드 한 대 장애 시
+# rescheduling 여유를 남깁니다. 본 토픽은 학습용이라 minikube 1노드 기준
+# CPU 16 / 메모리 32Gi 로 다소 크게 잡아 한도 초과 시연이 어렵게 둡니다.
+# (oversize-pod.yaml 의 거절 시연은 dev 에서만 진행)
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: prod-quota
+  namespace: prod
+spec:
+  hard:
+    # ── compute (dev 의 4배) ──
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+
+    # ── GPU (dev 의 4배) ──
+    # 운영 환경은 다중 모델 서빙 + 백업 GPU 까지 고려해 4장 까지 허용.
+    # minikube 검증 한계는 dev-quota.yaml 의 안내와 동일.
+    requests.nvidia.com/gpu: "4"
+
+    # ── storage (모델 가중치 + 로그 + 평가 결과) ──
+    persistentvolumeclaims: "10"
+    requests.storage: 200Gi
+
+    # ── object count (운영은 Helm 차트 단위로 자산이 늘어나므로 dev 보다 여유) ──
+    count/deployments.apps: "20"
+    count/services: "20"
+    count/configmaps: "30"
+    count/secrets: "30"
+    count/jobs.batch: "20"
+    count/cronjobs.batch: "10"

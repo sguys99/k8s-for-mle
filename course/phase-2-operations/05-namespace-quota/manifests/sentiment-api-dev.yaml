@@ -1,0 +1,195 @@
+# sentiment-api-dev.yaml — Phase 2/01·02 의 sentiment-api 자산을 dev namespace 로 옮긴 묶음 매니페스트
+#
+# 한 파일에 ConfigMap / Secret / PVC / Deployment / Service 5개를 List(`---`) 로 모았습니다.
+# 모든 자원의 metadata.namespace 는 `dev` — namespaced 자원은 namespace 마다 따로 만들어야 한다는
+# 격리의 기본 원리를 한눈에 보여줍니다.
+#
+# ─ 본 파일이 의도적으로 만드는 시연 포인트 (labs 6 단계) ─
+#   Deployment 의 main 컨테이너(`app`) 에는 `resources` 블록이 일부러 없습니다.
+#   dev-limitrange.yaml 가 적용되어 있으면 admission 에서 default / defaultRequest 가
+#   자동으로 채워집니다. `kubectl get pod -n dev <pod> -o jsonpath='{.spec.containers[0].resources}'`
+#   로 채워진 값(requests cpu 200m memory 256Mi, limits cpu 500m memory 512Mi)을 직접 확인할 수 있습니다.
+#
+# ─ initContainer 는 명시적 resources 보유 ─
+#   maxLimitRequestRatio cpu: "4" 제약을 만족시키기 위해 limits.cpu=800m, requests.cpu=200m (= 4배 정확).
+#   초과 시 `Invalid value: "5": cpu max limit to request ratio per Container is 4` 에러로 거절됩니다 (자주 하는 실수 후보).
+#
+# ─ 04 / 02 의 default 자산과의 관계 ─
+#   default 의 model-cache PVC 는 그대로 둡니다. dev 에는 새 PVC `model-cache-dev` 를 만들어
+#   namespaced 자원의 격리를 강화합니다. 모델은 dev 에서 처음 한 번 다시 다운로드됩니다.
+
+# ─ 1) ConfigMap ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentiment-api-config
+  namespace: dev                          # 01 의 default 와 같은 이름이지만 namespace 가 달라 별개 자원
+  labels:
+    app: sentiment-api
+    env: dev
+    phase: "2"
+    topic: "05-namespace-quota"
+data:
+  MODEL_NAME: "cardiffnlp/twitter-roberta-base-sentiment"
+  APP_VERSION: "v1-dev"                   # /ready 응답으로 어느 namespace 의 Pod 인지 즉시 식별 (01 = v1-cm, dev = v1-dev)
+  LOG_LEVEL: "DEBUG"                      # dev 환경답게 DEBUG 로 (prod 는 INFO)
+  HF_HOME: "/cache"                       # PVC 마운트 경로와 일치 → transformers 자동 캐시
+  inference.yaml: |
+    model:
+      name: cardiffnlp/twitter-roberta-base-sentiment
+      max_length: 128
+      top_k: 1
+    serving:
+      batch_size: 16                      # dev 는 작은 batch — 빠른 실험·짧은 응답 시간
+      timeout_seconds: 30
+---
+# ─ 2) Secret ─────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sentiment-api-secrets
+  namespace: dev
+  labels:
+    app: sentiment-api
+    env: dev
+type: Opaque
+stringData:
+  HF_TOKEN: "hf_REPLACE_ME_WITH_REAL_TOKEN"
+---
+# ─ 3) PVC (모델 가중치 캐시) ─────────────────────────────────────────────────
+# 02 의 default/model-cache 를 그대로 두고 dev 에는 별도 PVC 를 새로 만듭니다.
+# requests.storage=1Gi → dev-quota requests.storage(50Gi) 의 2% 사용. 학습 부하 최소.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache-dev
+  namespace: dev
+  labels:
+    app: sentiment-api
+    env: dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi                        # dev 는 작게 — roberta-base ~500MB + 여유
+---
+# ─ 4) Deployment ─────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api
+  namespace: dev
+  labels:
+    app: sentiment-api
+    env: dev
+    phase: "2"
+    topic: "05-namespace-quota"
+spec:
+  replicas: 1                             # dev 는 단일 replica — 작은 quota 안에서 실험 자유 우선
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: sentiment-api
+  template:
+    metadata:
+      labels:
+        app: sentiment-api
+        env: dev
+    spec:
+      initContainers:
+        - name: model-downloader
+          image: sentiment-api:v1
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: sentiment-api-config
+            - secretRef:
+                name: sentiment-api-secrets
+          command: ["python", "-c"]
+          args:
+            - |
+              import os
+              from huggingface_hub import snapshot_download
+              repo_id = os.environ["MODEL_NAME"]
+              cache_dir = os.environ["HF_HOME"] + "/hub"
+              print(f"[init] caching {repo_id} -> {cache_dir}")
+              snapshot_download(repo_id=repo_id, cache_dir=cache_dir)
+              print("[init] done")
+          volumeMounts:
+            - name: model-cache
+              mountPath: /cache
+          # ── 명시적 resources ──
+          # requests / limits 모두 명시. ratio = 800m / 200m = 4 → maxLimitRequestRatio 정확 만족.
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "500Mi"
+            limits:
+              cpu: "800m"                 # ⚠️ "1" 또는 "1000m" 으로 두면 ratio 5 > 4 로 admission 거절
+              memory: "1500Mi"
+      containers:
+        - name: app
+          image: sentiment-api:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: sentiment-api-config
+            - secretRef:
+                name: sentiment-api-secrets
+          volumeMounts:
+            - name: model-cache
+              mountPath: /cache
+            - name: inference-config
+              mountPath: /etc/inference/inference.yaml
+              subPath: inference.yaml
+              readOnly: true
+          # ⚠ 본 토픽의 핵심 시연: resources 블록을 의도적으로 적지 않습니다.
+          #   dev-limitrange.yaml 의 default(limits) / defaultRequest(requests) 가 admission 에서 자동으로 채웁니다.
+          #   채워진 결과는 labs 6 단계에서 `kubectl get pod -o jsonpath='{.spec.containers[0].resources}'` 로 검증.
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 2
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-dev    # 본 매니페스트에서 만든 PVC
+        - name: inference-config
+          configMap:
+            name: sentiment-api-config
+            items:
+              - key: inference.yaml
+                path: inference.yaml
+      terminationGracePeriodSeconds: 30
+---
+# ─ 5) Service ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api
+  namespace: dev
+  labels:
+    app: sentiment-api
+    env: dev
+spec:
+  type: ClusterIP
+  selector:
+    app: sentiment-api                    # selector 는 namespace 안에서만 매칭됨 → dev Service 는 dev Pod 만 선택
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

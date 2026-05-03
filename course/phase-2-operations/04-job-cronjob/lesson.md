@@ -287,6 +287,6 @@ minikube stop
 
 ## 다음 챕터
 
-➡️ [Phase 2 / 05-namespace-quota — Namespace, ResourceQuota, LimitRange](../05-namespace-quota/lesson.md) (작성 예정)
+➡️ [Phase 2 / 05-namespace-quota — Namespace, ResourceQuota, LimitRange](../05-namespace-quota/lesson.md)
 
 다음 토픽에서는 본 토픽까지 모두 `default` 네임스페이스에 쌓아 둔 자산을 **dev / staging / prod 네임스페이스로 분리** 하고, ResourceQuota 로 네임스페이스당 GPU 개수·CPU·메모리 총량을 제한, LimitRange 로 Pod 별 default request/limit 을 강제하는 **운영 격리** 패턴을 학습합니다. Phase 2 의 마지막 토픽이며, 이후 Phase 3 의 Helm / Prometheus / HPA 가 모두 namespace 단위로 동작하므로 본 토픽이 Phase 3 의 발판이 됩니다.
