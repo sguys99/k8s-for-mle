@@ -57,10 +57,10 @@
 ## Phase 2. 운영에 필요한 K8s 개념 (2주)
 
 - [ ] **01-configmap-secret** — 추론 하이퍼파라미터(ConfigMap), HF 토큰·S3 키(Secret)
-  - [ ] lesson.md
-  - [ ] 매니페스트/코드
-  - [ ] labs/
-  - [ ] minikube 검증
+  - [x] lesson.md
+  - [x] 매니페스트/코드
+  - [x] labs/
+  - [ ] minikube 검증 _(학습자가 labs 0–8단계 실행 후 갱신)_
 - [ ] **02-volumes-pvc** — PV/PVC/StorageClass, 모델 가중치 캐시, init container로 S3 다운로드
   - [ ] lesson.md
   - [ ] 매니페스트/코드

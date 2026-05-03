@@ -1,0 +1,85 @@
+# Phase 2 / 01-configmap-secret — ConfigMap/Secret 으로 진화한 sentiment-api Deployment
+# Phase 1/04 의 deployment.yaml 을 베이스로, 다음 두 가지를 바꿨습니다.
+#   1. 컨테이너의 env: 두 줄(MODEL_NAME, APP_VERSION) 제거 → ConfigMap 의 envFrom 으로 대체
+#   2. ConfigMap 의 inference.yaml 키를 volumeMount + subPath 로 /etc/inference/inference.yaml 에 마운트
+# 이미지·probes·resources·replicas 는 04 와 동일하게 유지하여 학습자 인지 부담을 최소화합니다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api                      # 04 와 동일 이름 → labs 0 단계에서 04 Deployment 정리 안내
+  labels:
+    app: sentiment-api
+    phase: "2"
+    topic: "01-configmap-secret"
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: sentiment-api
+  template:
+    metadata:
+      labels:
+        app: sentiment-api
+      annotations:
+        # checksum/config 패턴: ConfigMap/Secret 내용이 바뀌면 이 값을 갱신해 Pod template 을 변형시키고,
+        # 그 결과 Deployment 가 새 ReplicaSet 을 만들어 자동으로 롤링 업데이트가 일어납니다.
+        # 운영에서는 Helm/Kustomize 가 자동 계산해 주지만(예: sha256sum manifests/configmap.yaml),
+        # 본 토픽은 학습용이므로 손으로 갱신하거나 lab 6 단계에서 `kubectl rollout restart` 로 대체합니다.
+        checksum/config: "manual-v1"        # ConfigMap 변경 시 v2, v3 으로 손으로 올려보세요
+    spec:
+      containers:
+        - name: app
+          image: sentiment-api:v1          # 04 lab 에서 minikube 에 적재한 이미지를 그대로 재사용 (재빌드 불필요)
+          imagePullPolicy: IfNotPresent    # 외부 레지스트리 풀 시도 안 함 (없으면 ImagePullBackOff)
+          ports:
+            - name: http
+              containerPort: 8000
+
+          # ── 04 와의 핵심 차이: env 두 줄을 envFrom 두 블록으로 교체 ─────────────
+          # envFrom 은 ConfigMap/Secret 의 모든 키를 한꺼번에 환경 변수로 등록합니다.
+          # 키가 충돌하면 아래쪽(나중에 선언된) 소스가 위쪽을 덮어씁니다 (lab 7 단계에서 직접 검증).
+          envFrom:
+            - configMapRef:
+                name: sentiment-api-config       # MODEL_NAME, APP_VERSION, LOG_LEVEL 주입
+            - secretRef:
+                name: sentiment-api-secrets      # HF_TOKEN 주입
+          # ──────────────────────────────────────────────────────────────────────
+
+          # ── 추가: ConfigMap 의 inference.yaml 키를 파일로 마운트 ───────────────
+          # 키 1개만 골라서 마운트하려면 subPath 를 사용합니다 (volume 전체를 마운트하면 디렉토리가 통째로 덮어씌워짐).
+          volumeMounts:
+            - name: inference-config
+              mountPath: /etc/inference/inference.yaml
+              subPath: inference.yaml             # ConfigMap data 의 키 이름과 일치
+              readOnly: true
+          # ──────────────────────────────────────────────────────────────────────
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "800Mi"
+            limits:
+              cpu: "1"
+              memory: "1500Mi"
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 24
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 2
+      # ── volume 정의: 위 volumeMounts 의 name 과 짝을 이룹니다 ────────────────
+      volumes:
+        - name: inference-config
+          configMap:
+            name: sentiment-api-config
+            items:                              # 특정 키만 노출하려면 items 로 명시
+              - key: inference.yaml
+                path: inference.yaml            # subPath 와 매칭됨
+      terminationGracePeriodSeconds: 30

@@ -1,0 +1,32 @@
+# Phase 2 / 01-configmap-secret — 추론 설정용 ConfigMap
+# 목적: Phase 1/04 의 deployment.yaml 에 하드코딩되어 있던 MODEL_NAME / APP_VERSION 을 외부화하고,
+#       추가로 LOG_LEVEL(envFrom 시연용) 과 inference.yaml(volumeMount 시연용) 까지 한 ConfigMap 안에 둡니다.
+# 주입 방식: deployment.yaml 의 envFrom.configMapRef 로 모든 키가 환경 변수가 되며,
+#            inference.yaml 키는 volumeMount + subPath 로 컨테이너의 /etc/inference/inference.yaml 에 파일로 마운트됩니다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentiment-api-config
+  labels:
+    app: sentiment-api
+    phase: "2"
+    topic: "01-configmap-secret"
+data:
+  # ── envFrom 으로 환경 변수가 될 키 ───────────────────────────────────────
+  # FastAPI 앱이 os.getenv 로 실제 읽는 두 변수
+  MODEL_NAME: "cardiffnlp/twitter-roberta-base-sentiment"
+  APP_VERSION: "v1-cm"          # 04 의 "v1" 과 구분되도록 -cm 접미사 → /ready 응답으로 즉시 검증 가능
+  # 앱이 아직 안 읽지만 envFrom 시 모든 키가 env 가 됨을 보이는 시연용 키
+  LOG_LEVEL: "INFO"
+
+  # ── volumeMount 로 파일이 될 키 ──────────────────────────────────────────
+  # 키 이름이 그대로 파일명이 됩니다. "|" 다음 줄부터 끝까지가 파일 내용.
+  # 컨테이너 내부 경로: /etc/inference/inference.yaml (deployment.yaml 의 volumeMount.mountPath + subPath 로 결정)
+  inference.yaml: |
+    model:
+      name: cardiffnlp/twitter-roberta-base-sentiment
+      max_length: 128
+      top_k: 1
+    serving:
+      batch_size: 32
+      timeout_seconds: 30

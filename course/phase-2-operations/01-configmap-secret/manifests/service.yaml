@@ -1,0 +1,21 @@
+# Phase 2 / 01-configmap-secret — sentiment-api ClusterIP Service
+# Phase 1/04 의 service.yaml 을 그대로 가져왔습니다 (selector/포트/타입 모두 동일).
+# 본 토픽의 핵심은 Deployment 가 ConfigMap·Secret 으로 진화해도 Service 는 손댈 필요가 없다는 점입니다.
+# selector(app=sentiment-api) 만 일치하면 어떤 매니페스트로 띄운 Pod 든 같은 ClusterIP 로 라우팅됩니다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api
+  labels:
+    app: sentiment-api
+    phase: "2"
+    topic: "01-configmap-secret"
+spec:
+  type: ClusterIP
+  selector:
+    app: sentiment-api                     # Deployment template.metadata.labels 와 정확히 일치해야 함
+  ports:
+    - name: http
+      port: 80                             # 클라이언트가 보는 Service 포트 (curl http://sentiment-api/predict)
+      targetPort: 8000                     # 실제 트래픽이 도달하는 컨테이너 포트 (FastAPI)
+      protocol: TCP
