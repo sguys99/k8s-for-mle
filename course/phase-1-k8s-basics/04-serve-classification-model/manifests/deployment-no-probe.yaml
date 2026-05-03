@@ -1,0 +1,47 @@
+# Phase 1 / 04-serve-classification-model — Probe를 일부러 뺀 비교용 Deployment (안티패턴)
+# 목적: deployment.yaml과 한 군데(Probe 유무)만 다르게 두고 labs 5단계에서 교체 적용합니다.
+#       Probe가 없으면 Pod의 STATUS는 컨테이너 부팅 직후 바로 Ready=true가 되고,
+#       Service는 모델 로딩이 끝나기 전부터 트래픽을 보내기 시작해 503/connection refused가 발생합니다.
+# 학습 의도: "Probe가 왜 옵션이 아니라 기본값이어야 하는가"를 한 번 직접 보고 넘어갑니다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api                      # 같은 이름으로 apply 하면 기본형 Deployment를 in-place 교체합니다
+  labels:
+    app: sentiment-api
+    phase: "1"
+    topic: "04-serve-classification-model"
+    variant: "no-probe"                    # describe로 어떤 변형인지 즉시 식별
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: sentiment-api
+  template:
+    metadata:
+      labels:
+        app: sentiment-api
+    spec:
+      containers:
+        - name: app
+          image: sentiment-api:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: APP_VERSION
+              value: "v1"
+            - name: MODEL_NAME
+              value: "cardiffnlp/twitter-roberta-base-sentiment"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "800Mi"
+            limits:
+              cpu: "1"
+              memory: "1500Mi"
+          # readinessProbe / livenessProbe 의도적으로 누락 — 안티패턴 시연용
+          # Probe가 없으면 Kubelet은 "컨테이너 프로세스가 떠 있다"는 사실만으로 Ready=true 처리합니다.
+      terminationGracePeriodSeconds: 30

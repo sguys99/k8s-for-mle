@@ -1,0 +1,22 @@
+# Phase 1 / 04-serve-classification-model — sentiment-api ClusterIP Service
+# 03-service-networking/manifests/service-clusterip.yaml과 거의 동일하지만,
+# 04에서는 단일 Service만 두기 위해 별도 파일로 복사합니다(03 디렉토리에 의존하지 않게).
+# 04의 핵심은 "Pod이 죽었다 살아나는 동안에도 Service ClusterIP는 그대로"라는 점이며,
+# labs 4단계에서 kubectl delete pod 후 ClusterIP가 변하지 않음을 확인합니다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api                      # Deployment와 같은 이름 (관리 편의), DNS는 sentiment-api.default.svc.cluster.local
+  labels:
+    app: sentiment-api
+    phase: "1"
+    topic: "04-serve-classification-model"
+spec:
+  type: ClusterIP                          # 04는 클러스터 내부 호출만 다룹니다 (외부 노출은 Phase 2/03 Ingress의 몫)
+  selector:
+    app: sentiment-api                     # Deployment template.metadata.labels와 정확히 일치
+  ports:
+    - name: http
+      port: 80                             # 클라이언트가 보는 Service 포트 (curl http://sentiment-api/predict)
+      targetPort: 8000                     # 실제 트래픽이 도달하는 컨테이너 포트 (FastAPI)
+      protocol: TCP

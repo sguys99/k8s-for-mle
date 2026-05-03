@@ -1,0 +1,30 @@
+# Phase 1 / 04-serve-classification-model — 클러스터 내부 호출 검증용 디버깅 Pod
+# Service는 ClusterIP라 호스트(노트북) 셸에서는 직접 도달할 수 없습니다.
+# 클러스터 안에 한 개의 Pod을 띄워두고 거기서 sentiment-api Service로 호출해
+# DNS 해석 / 부하 분산 / 자가 치유 시 트래픽 흐름을 함께 관찰합니다.
+# busybox는 wget/sh/nslookup만 필요하므로 1.5MB로 충분하지만,
+# /predict는 POST + JSON 본문이라 curl 이미지가 더 편합니다. 두 도구를 한 번에 쓰기 위해
+# busybox 대신 curlimages/curl 이미지를 사용합니다(JSON POST + nslookup + sh 모두 가능).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-client
+  labels:
+    role: debug-client
+    phase: "1"
+    topic: "04-serve-classification-model"
+spec:
+  restartPolicy: Never                     # 일회성. 죽으면 다시 안 띄움 (학습 흐름에 적합)
+  containers:
+    - name: client
+      image: curlimages/curl:8.10.1        # curl + sh 포함, 약 9MB. 03의 busybox와 달리 JSON POST 편함
+      imagePullPolicy: IfNotPresent
+      command: ["sh", "-c", "sleep 36000"] # 10시간 — labs 한 세션 동안 동일 Pod에 여러 번 exec 들어가기 위함
+      resources:
+        requests:
+          cpu: "10m"
+          memory: "16Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+  terminationGracePeriodSeconds: 5

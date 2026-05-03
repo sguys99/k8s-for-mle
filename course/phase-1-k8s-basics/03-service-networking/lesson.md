@@ -330,6 +330,6 @@ minikube stop
 
 ## 다음 챕터
 
-➡️ [Phase 1 / 04-serve-classification-model — 분류 모델 K8s 정식 배포](../04-serve-classification-model/lesson.md) (작성 예정)
+➡️ [Phase 1 / 04-serve-classification-model — 분류 모델 K8s 정식 배포](../04-serve-classification-model/lesson.md)
 
 03에서 익힌 ClusterIP Service를 02 Deployment에 그대로 얹어, sentiment-api를 K8s에 정식으로 올리고 Pod 강제 종료에도 자동 복구되는지 종단 검증합니다.

@@ -1,0 +1,64 @@
+# Phase 1 / 04-serve-classification-model — 분류 모델 정식 배포 Deployment
+# 목적: Phase 0에서 만든 sentiment-api 컨테이너를 K8s에서 "운영 모드"로 띄웁니다.
+#       02·03의 sentiment-api:v1 이미지를 그대로 재사용하되, ML 모델 로딩 시간(30~90초)을
+#       흡수하기 위해 Liveness/Readiness Probe를 본격적으로 설정합니다.
+# 자가 치유 검증: replicas=3 / kubectl delete pod 한 줄로 Pod이 사라져도
+#       ReplicaSet이 즉시 새 Pod을 띄우고, Service가 살아 있는 Pod으로만 트래픽을 보냅니다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api                      # 03의 Service(name=sentiment-api)와 짝을 맞추기 위해 동일 이름 사용
+  labels:
+    app: sentiment-api
+    phase: "1"
+    topic: "04-serve-classification-model"
+spec:
+  replicas: 3                              # 자가 치유 검증을 위해 ≥2 필수. 3은 K8s 추론 서비스의 가장 흔한 시작값
+  revisionHistoryLimit: 3                  # 04는 롤아웃을 다루지 않으므로 보관 개수를 3으로 줄여 etcd를 가볍게
+  selector:
+    matchLabels:
+      app: sentiment-api                   # Service의 selector 및 template.metadata.labels와 정확히 일치해야 함
+  template:
+    metadata:
+      labels:
+        app: sentiment-api                 # selector.matchLabels와 정확히 일치 (한 글자라도 다르면 Endpoints 비어 503)
+    spec:
+      containers:
+        - name: app
+          image: sentiment-api:v1          # 02 lab에서 minikube에 적재된 Phase 0 이미지를 그대로 재사용
+          imagePullPolicy: IfNotPresent    # 외부 레지스트리 풀 시도 안 함 (없으면 ImagePullBackOff)
+          ports:
+            - name: http
+              containerPort: 8000          # FastAPI/uvicorn 포트. Service의 targetPort가 됩니다
+          env:
+            - name: APP_VERSION
+              value: "v1"                  # /ready 응답에 표시되어 어느 Pod로 트래픽이 갔는지 식별
+            - name: MODEL_NAME
+              value: "cardiffnlp/twitter-roberta-base-sentiment"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "800Mi"              # 모델 약 500MB + tokenizer/스택 여유. 스케줄러는 이 값으로 노드를 고릅니다
+            limits:
+              cpu: "1"
+              memory: "1500Mi"             # OOMKilled 방지용 상한. 너무 빠듯하면 추론 도중에 죽을 수 있습니다
+          # ---- Probe 설정 (04 토픽의 핵심) ----
+          # readiness: 모델 로드가 끝나야 200을 반환 → Service가 트래픽을 라우팅하기 시작
+          # liveness : 프로세스만 살아 있으면 200 → 모델 상태와 무관 (잘못 잡으면 모델 로딩 중에 무한 재시작)
+          readinessProbe:
+            httpGet:
+              path: /ready                 # FastAPI: 모델 로드 완료 시 200, 로딩 중이면 503
+              port: 8000
+            initialDelaySeconds: 10        # 컨테이너 부팅 자체에 필요한 최소 시간
+            periodSeconds: 5
+            failureThreshold: 24           # 5초 × 24 = 모델 로딩에 최대 120초 허용 (HF 캐시 미스 대비)
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz               # FastAPI: 프로세스가 살아 있으면 항상 200
+              port: 8000
+            initialDelaySeconds: 60        # 모델 로딩이 끝날 때쯤부터 검사 시작 (너무 짧으면 무한 재시작)
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 2
+      terminationGracePeriodSeconds: 30    # SIGTERM 후 30초 동안 in-flight 요청 처리 후 종료
