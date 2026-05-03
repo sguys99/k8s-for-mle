@@ -1,0 +1,126 @@
+# templates/deployment.yaml — Phase 2/02 의 Deployment + Phase 2/05 의 dev/prod 차이를 차트로 흡수.
+#
+# 본 템플릿이 시연하는 핵심 문법 (lesson.md 1-2 절):
+#   {{ .Values.x.y }}                    — 기본 값 바인딩
+#   {{ .Release.Name|Namespace }}        — release 메타데이터
+#   {{- include "..." . | nindent N }}   — _helpers.tpl 의 라벨 묶음 include
+#   {{- if .Values.persistence.enabled }} ... {{- else }} ... {{- end }}   — 조건부 (PVC vs emptyDir)
+#   {{- with .Values.resources }} ... {{ toYaml . | nindent 12 }} {{- end }} — 빈 dict 면 블록 자체 생략
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      # selectorLabels 만 — Deployment.spec.selector 는 immutable. version / chart 메타 라벨은 selector 에서 제외.
+      {{- include "sentiment-api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentiment-api.labels" . | nindent 8 }}
+      annotations:
+        # ConfigMap / Secret 변경 시 Pod 자동 롤링을 트리거하는 표준 패턴.
+        # 두 자원의 sha256 합산을 annotation 으로 박으면, ConfigMap/Secret 이 바뀌었을 때만 helm upgrade 시 Pod 가 재시작됨.
+        # ($.Files 에 .Files.Get 으로 체크섬 잡는 패턴도 있지만 templates 동적 렌더링에는 include 가 표준)
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # ── initContainer: 모델 가중치를 PVC 에 한 번만 다운로드 (Phase 2/02 패턴 그대로) ──
+      initContainers:
+        - name: model-downloader
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: sentiment-api-config
+            - secretRef:
+                name: sentiment-api-secrets
+          command: ["python", "-c"]
+          args:
+            - |
+              import os
+              from huggingface_hub import snapshot_download
+              repo_id = os.environ["MODEL_NAME"]
+              cache_dir = os.environ["HF_HOME"] + "/hub"
+              print(f"[init] caching {repo_id} -> {cache_dir}")
+              snapshot_download(repo_id=repo_id, cache_dir=cache_dir)
+              print("[init] done")
+          volumeMounts:
+            - name: model-cache
+              mountPath: /cache
+          # init 의 resources 는 환경별 차이가 없어 values.yaml 에 단일 값으로 둠.
+          # ratio 4 = 800m/200m → Phase 2/05 LimitRange maxLimitRequestRatio 정확 만족.
+          resources:
+            {{- toYaml .Values.initContainerResources | nindent 12 }}
+
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: sentiment-api-config
+            - secretRef:
+                name: sentiment-api-secrets
+          volumeMounts:
+            - name: model-cache
+              mountPath: /cache
+            - name: inference-config
+              mountPath: /etc/inference/inference.yaml
+              subPath: inference.yaml
+              readOnly: true
+          # main 의 resources 는 환경별 차이.
+          # values-dev.yaml: resources: {}    → with 가 false 로 평가되어 resources: 블록 자체 생략 → LimitRange default 가 admission 에서 채움
+          # values-prod.yaml: resources: { requests, limits 명시 } → with 가 true 로 평가되어 toYaml 로 펼쳐짐
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.service.targetPort }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.service.targetPort }}
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+
+      volumes:
+        - name: model-cache
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: model-cache-{{ .Release.Namespace }}
+          {{- else }}
+          # PVC 비활성 시 emptyDir — Pod 재시작 시 모델 재다운로드 발생. CI / 빠른 테스트 용도.
+          emptyDir: {}
+          {{- end }}
+        - name: inference-config
+          configMap:
+            name: sentiment-api-config
+            items:
+              - key: inference.yaml
+                path: inference.yaml

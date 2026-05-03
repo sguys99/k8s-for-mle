@@ -1,0 +1,26 @@
+# templates/pvc.yaml — Phase 2/02 의 PVC 를 차트화한 결과.
+#
+# 핵심 디자인:
+#   1. 자원 이름에 .Release.Namespace 를 붙여 dev / prod 의 PVC 가 자동으로 다른 이름이 됩니다 —
+#      Phase 2/05 의 model-cache-dev / model-cache-prod 패턴을 차트가 자동으로 재현.
+#   2. {{- if .Values.persistence.enabled }} 로 감싸 false 일 때는 PVC 자체가 만들어지지 않음 —
+#      이 경우 deployment.yaml 가 emptyDir 로 폴백 (개발 환경 / CI 에서 빠른 시도용).
+
+{{- if .Values.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  # model-cache-dev / model-cache-prod / model-cache-staging 등 환경별 자동 분리.
+  # Phase 2/02 의 model-cache 와는 이름이 다르지만, 같은 namespace 에 default 의 model-cache 와 함께 살아도
+  # namespace 가 다르므로 충돌하지 않음 (Phase 2/05 lesson.md 1-1 표 참고).
+  name: model-cache-{{ .Release.Namespace }}
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

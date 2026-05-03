@@ -1,0 +1,18 @@
+# templates/service.yaml — Phase 2/01 의 Service 를 차트화한 결과.
+# Service 는 selectorLabels 만 사용 — Pod 라벨 중 안정적인 부분만 매칭.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "sentiment-api.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP

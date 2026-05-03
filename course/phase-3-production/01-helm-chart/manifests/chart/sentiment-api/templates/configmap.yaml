@@ -1,0 +1,37 @@
+# templates/configmap.yaml — Phase 2/01 의 ConfigMap 을 차트화한 결과.
+#
+# 환경 변수 키 (envFrom 으로 컨테이너에 주입):
+#   MODEL_NAME  ← .Values.model.name
+#   APP_VERSION ← .Values.env.APP_VERSION (values-dev.yaml: v1-helm-dev / values-prod.yaml: v1-helm-prod)
+#   LOG_LEVEL   ← .Values.env.LOG_LEVEL  (values-dev.yaml: DEBUG / values-prod.yaml: INFO)
+#   HF_HOME     ← .Values.env.HF_HOME    (PVC 마운트 경로와 일치 → transformers 자동 캐시)
+#
+# 파일 키 (volumeMount + subPath 로 컨테이너에 파일로 마운트):
+#   inference.yaml ← .Values.model.{name,maxLength,topK,batchSize,timeoutSeconds} 를 YAML 로 펼침
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # 자원 이름은 release 이름을 prefix 하지 않고 안정적인 이름을 사용합니다 — Phase 2/01 의 sentiment-api-config 와 일치.
+  # 같은 namespace 에서 같은 차트가 두 번 install 되는 경우는 본 토픽 범위 밖이라 ConfigMap 충돌 가능성을 무시합니다.
+  name: sentiment-api-config
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+data:
+  # ── envFrom 으로 환경 변수가 될 키 ────────────────────────────────────────
+  MODEL_NAME: {{ .Values.model.name | quote }}
+  APP_VERSION: {{ .Values.env.APP_VERSION | quote }}
+  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
+  HF_HOME: {{ .Values.env.HF_HOME | quote }}
+
+  # ── volumeMount 로 파일이 될 키 ────────────────────────────────────────────
+  # Phase 2/01 의 inference.yaml 키와 같은 형태. tpl 함수 없이 단순 string concat 으로도 충분합니다.
+  # multi-line 문자열은 |- (trailing newline 제거) 로 시작 — YAML 직렬화 안정성.
+  inference.yaml: |-
+    model:
+      name: {{ .Values.model.name }}
+      max_length: {{ .Values.model.maxLength }}
+      top_k: {{ .Values.model.topK }}
+    serving:
+      batch_size: {{ .Values.model.batchSize }}
+      timeout_seconds: {{ .Values.model.timeoutSeconds }}

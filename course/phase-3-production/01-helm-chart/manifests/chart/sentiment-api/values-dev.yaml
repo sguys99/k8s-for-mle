@@ -1,0 +1,29 @@
+# values-dev.yaml — dev 환경 override
+#
+# 사용:
+#   helm install sentiment-api ./manifests/chart/sentiment-api \
+#       -n dev \
+#       -f manifests/chart/sentiment-api/values-dev.yaml \
+#       --set secrets.hfToken=$HF_TOKEN
+#
+# 본 파일은 values.yaml 과의 "차이만" 적습니다 — 다른 키는 values.yaml 의 기본값이 그대로 사용됩니다.
+# Phase 2/05 의 sentiment-api-dev.yaml 와 같은 결과를 만들기 위한 6줄짜리 override.
+
+replicaCount: 1                                # 기본값과 같지만 명시성 (코드 리뷰에서 환경별 의도가 보임)
+
+env:
+  APP_VERSION: "v1-helm-dev"                   # /ready 응답으로 환경 식별. Phase 2/05 의 v1-dev 와 차이를 두어 차트로 install 됐음을 표시
+  LOG_LEVEL: "DEBUG"                           # dev 는 자세한 로그
+  HF_HOME: "/cache"                            # values.yaml 과 동일 — 명시 (env 블록 partial override 시 모든 키 명시 필요)
+
+model:
+  batchSize: 16                                # dev 는 작은 batch — 빠른 실험·짧은 응답
+  timeoutSeconds: 30
+
+# resources 비워둠 — dev-limitrange.yaml 의 default / defaultRequest 가 admission 에서 자동으로 채움
+# (Phase 2/05 6단계의 핵심 시연을 차트에서도 재현)
+resources: {}
+
+persistence:
+  enabled: true
+  size: 1Gi                                    # dev 는 작게 — dev-quota requests.storage 50Gi 의 2%

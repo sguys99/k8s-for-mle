@@ -1,0 +1,36 @@
+# values-prod.yaml — prod 환경 override
+#
+# 사용:
+#   helm install sentiment-api ./manifests/chart/sentiment-api \
+#       -n prod \
+#       -f manifests/chart/sentiment-api/values-prod.yaml \
+#       --set secrets.hfToken=$HF_TOKEN
+#
+# Phase 2/05 의 sentiment-api-prod.yaml 와 같은 결과를 만드는 override.
+# 운영 자산은 LimitRange default 에 의존하지 않고 resources 를 항상 명시 — Phase 2/05 lesson.md 1-5 절의 운영 원칙.
+
+replicaCount: 2                                # 가용성 — 1 Pod 죽어도 Service 가 다른 Pod 로 라우팅
+
+env:
+  APP_VERSION: "v1-helm-prod"
+  LOG_LEVEL: "INFO"                            # prod 는 정보 수준 (DEBUG 는 노이즈)
+  HF_HOME: "/cache"
+
+model:
+  batchSize: 32                                # prod 는 큰 batch — 처리량 우선
+  timeoutSeconds: 60
+
+# 운영 표준: resources 명시. LimitRange default 에 의존하지 않음.
+# - prod-limitrange Container max: cpu 8 / memory 16Gi → 본 값 충분히 통과
+# - maxLimitRequestRatio cpu 4 → 1 / 500m = 2 ✓
+resources:
+  requests:
+    cpu: "500m"                                # SLA 보장량 — Phase 3/03 HPA 의 기준값이 됩니다
+    memory: "1Gi"
+  limits:
+    cpu: "1"                                   # ratio 2 — burst 여유 적당히
+    memory: "2Gi"
+
+persistence:
+  enabled: true
+  size: 2Gi                                    # prod 는 모델 가중치 + 추가 메타파일 여유

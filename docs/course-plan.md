@@ -87,10 +87,10 @@
 ## Phase 3. 프로덕션 운영 도구 (2주)
 
 - [ ] **01-helm-chart** — Phase 2 매니페스트를 Helm 차트로 패키징, install/upgrade/rollback
-  - [ ] lesson.md
-  - [ ] Helm 차트 (Chart.yaml, values.yaml, templates/)
-  - [ ] labs/
-  - [ ] minikube 검증
+  - [x] lesson.md
+  - [x] Helm 차트 (Chart.yaml, values.yaml, templates/)
+  - [x] labs/
+  - [ ] minikube 검증 _(학습자가 labs 0–8단계 실행 후 갱신)_
 - [ ] **02-prometheus-grafana** — kube-prometheus-stack, FastAPI `/metrics`, ServiceMonitor, Grafana 대시보드
   - [ ] lesson.md
   - [ ] 매니페스트/코드

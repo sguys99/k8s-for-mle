@@ -1,0 +1,39 @@
+{{/*
+NOTES.txt — helm install / upgrade 직후 stdout 에 출력되는 안내 메시지.
+사용자가 install 직후 무엇을 해야 하는지를 알려주는 것이 목적입니다.
+다른 templates 와 달리 K8s 자원이 아닙니다 — 텍스트만 렌더링됩니다.
+*/}}
+sentiment-api {{ .Chart.AppVersion }} 가 namespace "{{ .Release.Namespace }}" 의 release "{{ .Release.Name }}" 로 설치되었습니다.
+
+📦 적용된 자원:
+  - ConfigMap   sentiment-api-config
+  - Secret      sentiment-api-secrets
+  - Service     sentiment-api ({{ .Values.service.type }}, port {{ .Values.service.port }} → targetPort {{ .Values.service.targetPort }})
+  - Deployment  sentiment-api (replicas {{ .Values.replicaCount }})
+{{- if .Values.persistence.enabled }}
+  - PVC         model-cache-{{ .Release.Namespace }} ({{ .Values.persistence.size }})
+{{- end }}
+
+🚀 동작 확인:
+
+  1) Pod Ready 대기 (모델 로딩으로 1–2분):
+     kubectl rollout status deployment/sentiment-api -n {{ .Release.Namespace }} --timeout=180s
+
+  2) Service 로 port-forward:
+     kubectl port-forward -n {{ .Release.Namespace }} svc/sentiment-api 18000:{{ .Values.service.port }}
+
+  3) /ready 호출 (다른 터미널에서):
+     curl -s http://localhost:18000/ready
+     # 예상: {"status":"ready","model":"{{ .Values.model.name }}","version":"{{ .Values.env.APP_VERSION }}"}
+
+🔍 helm 명령:
+
+  helm list -n {{ .Release.Namespace }}                    # release 확인
+  helm get values {{ .Release.Name }} -n {{ .Release.Namespace }}      # 적용 중인 사용자 values
+  helm get manifest {{ .Release.Name }} -n {{ .Release.Namespace }}    # 렌더링된 K8s 매니페스트
+  helm history {{ .Release.Name }} -n {{ .Release.Namespace }}         # revision 이력
+{{- if eq .Release.Namespace "dev" }}
+
+🧪 dev quota 사용량 변화 확인 (Phase 2/05 의 dev-quota 가 살아 있는 경우):
+  kubectl describe quota dev-quota -n dev
+{{- end }}

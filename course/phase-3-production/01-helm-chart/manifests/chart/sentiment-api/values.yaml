@@ -1,0 +1,119 @@
+# sentiment-api 차트 기본값 (values.yaml)
+#
+# 우선순위:  values.yaml (이 파일, 가장 낮음) < -f values-<env>.yaml < --set < --set-file
+# values.yaml 의 값은 "어떤 환경에서도 합리적인 출발점" 이어야 합니다 — 본 차트는 dev 와 거의 같은 값을 기본값으로 둡니다.
+#
+# 본 토픽 범위 (lesson.md 1-1 참고):
+#   ・ 활성: image / replicaCount / model / env / config / persistence / service / secrets / resources
+#   ・ placeholder (enabled: false 로만 두고 templates 는 만들지 않음):
+#       monitoring.serviceMonitor (Phase 3/02 활성)
+#       autoscaling               (Phase 3/03 활성)
+#       ingress                   (Phase 2/03 패턴이지만 본 차트에선 비활성)
+#       serviceAccount            (Phase 3/04 활성)
+
+# ─ 1) 이미지 ────────────────────────────────────────────────────────────────
+image:
+  repository: sentiment-api                    # Phase 0 에서 빌드한 로컬 이미지 이름 — minikube image load 로 적재
+  tag: "v1"                                    # Chart.yaml 의 appVersion 과 일치 — 운영 표준
+  pullPolicy: IfNotPresent                     # minikube 의 로컬 이미지 사용을 위해 IfNotPresent (Always 면 매번 registry 접속)
+
+imagePullSecrets: []                           # private registry 사용 시 추가 (예: [{ name: ghcr-credentials }])
+
+# ─ 2) Deployment 스펙 ──────────────────────────────────────────────────────
+replicaCount: 1                                # 기본값 dev 기준. values-prod.yaml 이 2 로 덮어씀
+revisionHistoryLimit: 3                        # rollback 가능한 revision 수 — Helm 자체 history 와 별개로 K8s 의 ReplicaSet history
+
+# main 컨테이너의 resources. 비워두면 LimitRange default 가 admission 단계에서 채웁니다 (Phase 2/05 패턴).
+# values-prod.yaml 가 명시 값으로 덮어씁니다 (운영 표준).
+resources: {}
+  # requests:
+  #   cpu: 500m
+  #   memory: 1Gi
+  # limits:
+  #   cpu: "1"
+  #   memory: 2Gi
+
+# initContainer (model-downloader) 의 resources. ratio 4 (limit/request) 를 LimitRange maxLimitRequestRatio 가 강제하므로
+# request·limit 둘 다 명시. 환경별 차이가 없어 values-<env>.yaml 에 노출하지 않습니다.
+initContainerResources:
+  requests:
+    cpu: "200m"
+    memory: "500Mi"
+  limits:
+    cpu: "800m"                                # ratio 4 — Phase 2/05 LimitRange maxLimitRequestRatio cpu: "4" 정확 만족
+    memory: "1500Mi"
+
+terminationGracePeriodSeconds: 30
+
+# ─ 3) Service ──────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80                                     # Service 외부 포트
+  targetPort: 8000                             # 컨테이너 포트 (FastAPI)
+
+# ─ 4) Probes (Phase 1/04 부터 동일한 값) ───────────────────────────────────
+probes:
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 24                       # 모델 로딩 시간 24 × 5초 = 2분 여유
+    timeoutSeconds: 2
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    failureThreshold: 3
+    timeoutSeconds: 2
+
+# ─ 5) 모델 / 추론 설정 (ConfigMap data 로 매핑) ───────────────────────────
+model:
+  name: "cardiffnlp/twitter-roberta-base-sentiment"
+  maxLength: 128
+  topK: 1
+  batchSize: 32                                # values-dev.yaml 이 16 으로 덮어씀
+  timeoutSeconds: 30                           # values-prod.yaml 이 60 으로 덮어씀
+
+# 환경 변수 (envFrom 의 ConfigMap 으로 들어감)
+env:
+  APP_VERSION: "v1-helm"                       # values-dev.yaml / values-prod.yaml 가 -dev / -prod 접미사로 덮어씀
+  LOG_LEVEL: "INFO"                            # values-dev.yaml 가 DEBUG 로 덮어씀
+  HF_HOME: "/cache"                            # PVC 마운트 경로와 일치 → transformers 자동 캐시
+
+# ─ 6) Secret (HF_TOKEN) ───────────────────────────────────────────────────
+# ⚠️ 보안: 이 파일에 실제 토큰을 적지 마세요. helm install 시 --set secrets.hfToken=$HF_TOKEN 으로 주입.
+#         운영에서는 External Secrets / SealedSecrets / helm secrets+sops 권장 (lesson.md 자주 하는 실수 3번).
+secrets:
+  hfToken: ""                                  # 비어 있으면 templates/secret.yaml 가 placeholder 로 채움
+
+# ─ 7) PVC (모델 가중치 캐시) ───────────────────────────────────────────────
+persistence:
+  enabled: true                                # false 면 PVC 자체가 만들어지지 않고 emptyDir 로 폴백 (templates/deployment.yaml)
+  size: 1Gi                                    # values-prod.yaml 이 2Gi 로 덮어씀
+  storageClass: "standard"                     # minikube 기본 클래스
+  accessMode: ReadWriteOnce                    # minikube hostPath 한계 (Phase 2/02 lesson.md 참고)
+
+# ─ 8) placeholder 섹션 (다음 토픽이 활성화) ────────────────────────────────
+# 본 차트에는 templates 가 없습니다. enabled: false 자리만 잡아두어 Phase 3/02·03·04 가 templates 만 추가하면 됩니다.
+
+monitoring:
+  serviceMonitor:
+    enabled: false                             # Phase 3/02 (Prometheus) 에서 true 로
+    interval: 30s
+    path: /metrics
+    labels:
+      release: prom                            # kube-prometheus-stack 기본 셀렉터
+
+autoscaling:
+  enabled: false                               # Phase 3/03 (HPA) 에서 true 로
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+ingress:
+  enabled: false                               # Phase 2/03 패턴 — 본 차트에서는 비활성
+  className: nginx
+  host: sentiment-api.local
+  path: /
+
+serviceAccount:
+  create: false                                # Phase 3/04 (RBAC) 에서 true 로
+  name: ""                                     # 비우면 _helpers.tpl 의 sentiment-api.serviceAccountName 가 release 이름 사용
