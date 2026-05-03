@@ -8,6 +8,8 @@
 
 환경 변수:
 - MODEL_NAME : HuggingFace 모델 ID (기본: cardiffnlp/twitter-roberta-base-sentiment)
+- APP_VERSION: 앱 버전 식별자 (기본: "unknown"). Phase 1/02의 롤링 업데이트 실습에서
+               같은 이미지를 v1/v2 두 태그로 띄우면서 /ready 응답으로 구별할 때 사용합니다.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger("serving")
 
 MODEL_NAME = os.getenv("MODEL_NAME", "cardiffnlp/twitter-roberta-base-sentiment")
+APP_VERSION = os.getenv("APP_VERSION", "unknown")
 
 # Prometheus 메트릭 — Phase 3의 Grafana 대시보드에서 그대로 사용합니다.
 REQUEST_COUNT = Counter(
@@ -96,7 +99,7 @@ async def ready():
     """K8s readinessProbe용 — 모델 로딩이 끝나야 200을 반환합니다."""
     if not _state["ready"]:
         raise HTTPException(status_code=503, detail="Model not ready")
-    return {"status": "ready", "model": MODEL_NAME}
+    return {"status": "ready", "model": MODEL_NAME, "version": APP_VERSION}
 
 
 @app.get("/metrics")

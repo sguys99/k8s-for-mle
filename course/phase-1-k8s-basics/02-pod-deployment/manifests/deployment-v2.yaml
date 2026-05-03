@@ -1,0 +1,61 @@
+# Phase 1 / 02-pod-deployment — Deployment v2 (apply 방식 비교용)
+# deployment-v1.yaml과 단 두 줄(image 태그, APP_VERSION env)만 다릅니다.
+# metadata.name이 동일하므로 kubectl apply 시 같은 Deployment가 업데이트됩니다.
+#
+# 사용 예시 (labs 6단계 보조):
+#   kubectl apply -f manifests/deployment-v2.yaml
+#   → kubectl set image deployment/sentiment-api app=sentiment-api:v2와 동일한 효과
+#
+# 본 토픽 메인 흐름은 set image를 사용합니다. 본 파일은 "매니페스트 수정 + apply" 방식이
+# GitOps 관점에서 어떻게 다른지 직접 비교해 보고 싶을 때 사용하세요.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api                # v1과 동일해야 같은 Deployment를 업데이트합니다
+  labels:
+    app: sentiment-api
+    phase: "1"
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: sentiment-api
+  template:
+    metadata:
+      labels:
+        app: sentiment-api
+    spec:
+      containers:
+        - name: app
+          image: sentiment-api:v2    # ← v1과 다른 점 1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: APP_VERSION
+              value: "v2"            # ← v1과 다른 점 2
+            - name: MODEL_NAME
+              value: "cardiffnlp/twitter-roberta-base-sentiment"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "600Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30

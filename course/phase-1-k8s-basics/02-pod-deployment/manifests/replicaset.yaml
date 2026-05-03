@@ -1,0 +1,57 @@
+# Phase 1 / 02-pod-deployment — ReplicaSet self-healing 시연용
+# ReplicaSet은 selector + replicas 수를 보고 "desired replicas를 끊임없이 수렴"시킵니다.
+# Pod 1개를 강제 삭제해도 즉시 새 Pod이 만들어지는 것을 관찰합니다.
+# 실무에서는 ReplicaSet을 직접 만들 일이 거의 없습니다 (Deployment가 자동 생성).
+
+apiVersion: apps/v1                  # ReplicaSet/Deployment는 apps/v1 그룹
+kind: ReplicaSet
+metadata:
+  name: sentiment-api-rs
+  labels:
+    app: sentiment-api
+    controller: replicaset           # Deployment 시연과 라벨이 겹치지 않도록 분리
+    phase: "1"
+spec:
+  replicas: 2                        # 원하는 Pod 개수. 죽으면 즉시 새로 만들어 이 수를 유지합니다.
+  selector:
+    matchLabels:
+      app: sentiment-api
+      controller: replicaset         # 아래 template.metadata.labels와 정확히 일치해야 합니다 (자주 하는 실수 1)
+  template:                          # 이 템플릿으로 Pod을 찍어냅니다
+    metadata:
+      labels:
+        app: sentiment-api
+        controller: replicaset       # selector.matchLabels와 정확히 일치
+    spec:
+      containers:
+        - name: app
+          image: sentiment-api:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: APP_VERSION
+              value: "v1"
+            - name: MODEL_NAME
+              value: "cardiffnlp/twitter-roberta-base-sentiment"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "600Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30

@@ -1,0 +1,58 @@
+# Phase 1 / 02-pod-deployment — 메인 Deployment (v1)
+# 이 Deployment가 본 토픽의 중심입니다. labs 4·5·6단계에서 다음 명령들의 대상이 됩니다.
+#   - kubectl rollout status / history
+#   - kubectl scale --replicas=N
+#   - kubectl set image deployment/sentiment-api app=sentiment-api:v2
+#   - kubectl rollout undo
+# Deployment는 자기 안의 Pod 템플릿이 바뀔 때마다 새 ReplicaSet을 만들어 점진적으로 교체합니다.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api                # set image / rollout undo의 대상 이름
+  labels:
+    app: sentiment-api
+    phase: "1"
+spec:
+  replicas: 3                        # ML 서빙 기본 가용성. labs 5단계에서 5로 늘려봅니다.
+  revisionHistoryLimit: 5            # 과거 ReplicaSet 5개까지 보관 → rollout undo로 5단계 전까지 롤백 가능
+  selector:
+    matchLabels:
+      app: sentiment-api             # template.metadata.labels와 정확히 일치 (selector는 immutable)
+  template:
+    metadata:
+      labels:
+        app: sentiment-api           # selector.matchLabels와 정확히 일치
+    spec:
+      containers:
+        - name: app                  # set image의 컨테이너 이름 (kubectl set image deploy/X app=...)
+          image: sentiment-api:v1    # labs 6단계에서 sentiment-api:v2로 교체됩니다
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: APP_VERSION      # /ready 응답에서 v1/v2를 구별하는 키
+              value: "v1"            # image 태그와 짝을 맞춰 변경합니다
+            - name: MODEL_NAME
+              value: "cardiffnlp/twitter-roberta-base-sentiment"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "600Mi"        # 모델 약 500MB가 메모리에 상주합니다
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 20  # 모델 로드 완료 전까지 traffic을 받지 않습니다
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30

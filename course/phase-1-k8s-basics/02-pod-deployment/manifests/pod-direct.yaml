@@ -1,0 +1,52 @@
+# Phase 1 / 02-pod-deployment — Pod 단독 한계 시연용
+# 이 매니페스트는 "Pod을 컨트롤러 없이 직접 만들면 어떻게 되는가"를 보여주기 위함입니다.
+# kubectl delete pod로 지우면 그대로 사라지고 끝입니다 (자동 복구 없음).
+# 이후 단계에서 ReplicaSet/Deployment와 비교됩니다.
+
+apiVersion: v1                       # Pod은 core API(v1) 그룹
+kind: Pod                            # 컨트롤러 없이 만든 단독 Pod — 자동 복구 안 됨
+metadata:
+  name: pod-direct
+  labels:
+    app: sentiment-api               # ML 워크로드 식별용 (ReplicaSet selector와 겹치지 않도록 role 라벨로 구분)
+    role: pod-direct                 # 단독 Pod 식별자
+    phase: "1"
+spec:
+  containers:
+    - name: app
+      image: sentiment-api:v1                  # Phase 0에서 빌드한 sentiment-api:multi의 v1 태그
+      imagePullPolicy: IfNotPresent            # 로컬에 있으면 다시 풀하지 않음 (자주 하는 실수 3 방어)
+      ports:
+        - containerPort: 8000                  # FastAPI/uvicorn 기본 포트
+      env:
+        - name: APP_VERSION                    # /ready 응답에 표시되는 버전 식별자
+          value: "v1"
+        - name: MODEL_NAME
+          value: "cardiffnlp/twitter-roberta-base-sentiment"
+      # 모델 약 500MB가 메모리에 올라가므로 requests/limits를 넉넉히 잡습니다.
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "600Mi"
+        limits:
+          cpu: "1"
+          memory: "1Gi"
+      # readinessProbe — 모델 로딩이 끝나야 /ready가 200을 반환합니다.
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: 8000
+        initialDelaySeconds: 20                # 모델 로드에 보통 15~30초 소요
+        periodSeconds: 5
+        failureThreshold: 6
+      # livenessProbe — 컨테이너가 살아 있는지 확인. /healthz는 모델 로딩 여부와 무관하게 200.
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8000
+        initialDelaySeconds: 60
+        periodSeconds: 10
+  terminationGracePeriodSeconds: 30
+  # restartPolicy: Always는 "컨테이너가 죽으면" 재시작합니다.
+  # Pod 자체가 삭제되거나 노드가 죽으면 복구하지 못합니다 — ReplicaSet이 필요한 이유.
+  restartPolicy: Always

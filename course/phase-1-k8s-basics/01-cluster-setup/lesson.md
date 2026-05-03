@@ -214,4 +214,4 @@ minikube stop
 
 ## 다음 챕터
 
-➡️ [Phase 1 / 02-pod-deployment — Pod / ReplicaSet / Deployment](../02-pod-deployment/lesson.md) (작성 예정)
+➡️ [Phase 1 / 02-pod-deployment — Pod / ReplicaSet / Deployment](../02-pod-deployment/lesson.md)
