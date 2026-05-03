@@ -1,0 +1,32 @@
+# Phase 2 / 03-ingress — 추론 설정용 ConfigMap (02 에서 그대로 가져와 한 가지만 변경)
+# 변경: APP_VERSION "v1-pvc" → "v1-ingress" — /ready 응답으로 본 토픽임을 즉시 식별
+# 그 외 (MODEL_NAME, LOG_LEVEL, HF_HOME, inference.yaml) 는 02 와 동일하여 학습자 인지 부담 최소화.
+# 본 토픽의 핵심은 ConfigMap/Secret/PVC 매니페스트는 그대로 두고 Ingress 한 개만 더 얹는 것입니다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentiment-api-config
+  labels:
+    app: sentiment-api
+    phase: "2"
+    topic: "03-ingress"
+data:
+  # ── envFrom 으로 환경 변수가 될 키 ───────────────────────────────────────
+  MODEL_NAME: "cardiffnlp/twitter-roberta-base-sentiment"
+  APP_VERSION: "v1-ingress"      # 02 의 "v1-pvc" 와 구분
+  LOG_LEVEL: "INFO"
+
+  # ── PVC 캐시 경로 (02 와 동일) ──────────────────────────────────────────
+  # transformers / huggingface_hub 라이브러리는 HF_HOME 이 설정되면
+  # 자동으로 $HF_HOME/hub 아래에서 모델 가중치를 찾고 저장합니다.
+  HF_HOME: "/cache"
+
+  # ── volumeMount 로 파일이 될 키 (01·02 와 동일) ─────────────────────────
+  inference.yaml: |
+    model:
+      name: cardiffnlp/twitter-roberta-base-sentiment
+      max_length: 128
+      top_k: 1
+    serving:
+      batch_size: 32
+      timeout_seconds: 30

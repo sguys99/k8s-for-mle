@@ -1,0 +1,24 @@
+# Phase 2 / 03-ingress — sentiment-api ClusterIP Service
+# 02 의 service.yaml 과 selector / 포트 / 타입 모두 동일합니다 (label 의 topic 만 갱신).
+#
+# 본 토픽의 핵심: Service 는 손대지 않고 그대로 둔 채 Ingress 한 개만 더 얹습니다.
+#   - Service: 클러스터 내부에서만 호출 (ClusterIP, 02 까지의 사용 방식)
+#   - Ingress: 같은 Service 를 클러스터 외부에서 호출 가능하게 노출 (본 토픽의 추가 자산)
+# Ingress 는 Service 를 "대체" 하는 것이 아니라 그 앞단에 붙어 라우팅 규칙을 추가하는 L7 게이트웨이입니다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api
+  labels:
+    app: sentiment-api
+    phase: "2"
+    topic: "03-ingress"
+spec:
+  type: ClusterIP
+  selector:
+    app: sentiment-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

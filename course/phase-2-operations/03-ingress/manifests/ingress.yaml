@@ -1,0 +1,68 @@
+# Phase 2 / 03-ingress — sentiment-api 를 외부 경로 /v1/sentiment 로 노출하는 Ingress
+#
+# 동작 흐름:
+#   외부 curl  →  ingress-nginx-controller (ingress-nginx 네임스페이스의 nginx Pod)
+#              →  본 Ingress 리소스의 라우팅 룰 매칭
+#              →  service/sentiment-api:80
+#              →  deployment/sentiment-api 의 Pod (replicas=2 중 하나)
+#
+# 본 매니페스트가 하는 일은 "라우팅 규칙 선언" 뿐입니다. 실제 라우팅은 ingress-nginx-controller 의
+# nginx 프로세스가 본 리소스를 watch 해서 자기 nginx.conf 에 반영함으로써 일어납니다 (lesson.md 1-3 참고).
+#
+# 사전 조건: `minikube addons enable ingress` 로 ingress-nginx-controller 가 떠 있어야 합니다.
+# 확인:    `kubectl get pods -n ingress-nginx`  → controller Pod 가 1/1 Running.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sentiment-api
+  labels:
+    app: sentiment-api
+    phase: "2"
+    topic: "03-ingress"
+  # ── annotations: nginx-ingress-controller 전용 동작 튜닝 ─────────────────
+  # 같은 Ingress 리소스라도 어느 controller(nginx, traefik, GCE, AWS ALB) 가 처리하느냐에 따라
+  # 사용 가능한 annotation 키가 다릅니다. 본 토픽은 minikube 의 ingress-nginx 기준입니다.
+  annotations:
+    # ML 모델 추론은 5–60s 가 흔합니다. nginx 의 기본 60s timeout 에 걸려 504 가 나면
+    # Pod 로그는 200 OK 라 학습자가 원인을 헛다리 짚는 대표적 함정입니다 (lesson.md 자주 하는 실수 3번).
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    # 이미지 분류·OCR·오디오 모델은 요청 본문이 큽니다. nginx 기본 1m 를 넘기면 413 Payload Too Large.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    # LLM SSE / chunked 스트리밍 응답을 사용한다면 buffering 을 꺼야 토큰이 즉시 흘러나갑니다.
+    # 본 토픽 모델은 단발성 분류 응답이라 기본값(on) 으로 두지만, Phase 4 의 vLLM 에서 다시 만납니다.
+    # nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    #
+    # rewrite-target: ingress 가 받은 경로 prefix(/v1/sentiment) 를 떼고 백엔드에는 그 뒤만 전달합니다.
+    # 백엔드 FastAPI 는 /predict, /ready, /healthz 만 알고 /v1/sentiment 라는 prefix 는 모르기 때문입니다.
+    # 캡처 그룹 $2 가 path 의 두 번째 그룹(.*) 에 매칭됩니다 — 아래 spec.rules.paths.path 의 정규식 참고.
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  # ingressClassName: 본 리소스를 처리할 controller 를 명시합니다.
+  # minikube addons 의 ingress-nginx 는 IngressClass `nginx` 로 등록되어 있어 이 키 한 줄로 매칭됩니다.
+  # 이 줄을 빼면 controller 가 리소스를 무시해 ADDRESS 는 잡히지만 404 가 떨어집니다 (자주 하는 실수 2번).
+  ingressClassName: nginx
+  rules:
+    # host 를 비워두면 모든 호스트에서 매칭됩니다. 학습 단순화를 위해 본 매니페스트는 path 만 사용합니다.
+    # 호스트 기반 라우팅을 시연하려면 `host: sentiment.<minikube-ip>.nip.io` 같은 식으로 추가 (lesson 1-5 참고).
+    - http:
+        paths:
+          # path: 정규식 두 그룹 ─ (1) /  또는 끝, (2) 그 뒤의 모든 경로
+          # 예: /v1/sentiment       → $2 가 빈 문자열 → 백엔드에는 "/" 로 도착
+          #     /v1/sentiment/      → $2 가 빈 문자열 → 백엔드에는 "/" 로 도착
+          #     /v1/sentiment/ready → $2 가 "ready"  → 백엔드에는 "/ready" 로 도착
+          #     /v1/sentiment/predict → $2 가 "predict" → 백엔드에는 "/predict" 로 도착
+          - path: /v1/sentiment(/|$)(.*)
+            # ImplementationSpecific: 정규식·rewrite 같은 controller 고유 기능을 쓸 때 선택.
+            # Prefix/Exact 는 정규식 사용 불가 (lesson 1-4 표 참고).
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: sentiment-api               # service.yaml 의 metadata.name 과 일치
+                port:
+                  number: 80                       # service.yaml 의 ports[0].port 와 일치
+  # TLS 사용 시 주석 해제 (운영에서는 cert-manager 로 자동 발급, 본 토픽 범위 밖)
+  # tls:
+  #   - hosts:
+  #       - sentiment.example.com
+  #     secretName: sentiment-api-tls
