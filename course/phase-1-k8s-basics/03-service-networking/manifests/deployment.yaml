@@ -1,0 +1,57 @@
+# Phase 1 / 03-service-networking — Service 학습용 Deployment
+# 02-pod-deployment/manifests/deployment-rolling.yaml 의 단순화 버전입니다.
+#   - 03의 학습 포인트는 "Service"이므로 strategy/minReadySeconds/progressDeadlineSeconds 등은 제거
+#   - replicas는 3 → 2로 축소 (메모리 절약, Service의 부하 분산은 2개로도 충분히 관찰 가능)
+#   - APP_VERSION은 v1 고정 (03에서는 롤아웃을 다루지 않음)
+# 04-serve-classification-model 토픽에서 이 Deployment 위에 sentiment-api ClusterIP Service를
+# 그대로 얹어, Pod 강제 종료 시 자동 복구를 검증합니다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api
+  labels:
+    app: sentiment-api
+    phase: "1"
+spec:
+  replicas: 2                              # Service 부하 분산 관찰을 위해 최소 2개
+  selector:
+    matchLabels:
+      app: sentiment-api                   # Service의 selector도 이 라벨을 잡습니다
+  template:
+    metadata:
+      labels:
+        app: sentiment-api                 # selector와 정확히 일치 (한 글자 어긋나면 Endpoints 비어 503)
+    spec:
+      containers:
+        - name: app
+          image: sentiment-api:v1          # 02에서 minikube에 로드한 이미지를 그대로 재사용
+          imagePullPolicy: IfNotPresent    # 로컬 이미지 우선 (외부 레지스트리 풀 시도 안 함)
+          ports:
+            - name: http
+              containerPort: 8000          # FastAPI/uvicorn이 듣는 포트. Service의 targetPort가 됩니다
+          env:
+            - name: APP_VERSION
+              value: "v1"                  # /ready 응답에 표시되어 어느 Pod로 트래픽이 갔는지 식별
+            - name: MODEL_NAME
+              value: "cardiffnlp/twitter-roberta-base-sentiment"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "600Mi"              # 모델 약 500MB가 메모리에 상주합니다
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /ready                 # 모델 로드 완료 전에는 Service가 이 Pod로 트래픽을 보내지 않습니다
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30

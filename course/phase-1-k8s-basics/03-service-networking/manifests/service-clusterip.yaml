@@ -1,0 +1,21 @@
+# Phase 1 / 03-service-networking — ClusterIP Service (기본형)
+# 클러스터 내부에서만 도달 가능한 가상 IP + DNS 이름을 sentiment-api Pod 집합에 부여합니다.
+# 같은 네임스페이스의 다른 Pod이 "sentiment-api" 짧은 이름으로 호출할 수 있고,
+# 다른 네임스페이스에서는 "sentiment-api.default.svc.cluster.local" FQDN을 사용합니다.
+# 04-serve-classification-model 토픽에서 이 매니페스트를 그대로 재사용하므로 name은 변경하지 않습니다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api                    # 04에서 그대로 재사용되는 정식 엔드포인트 이름
+  labels:
+    app: sentiment-api
+    phase: "1"
+spec:
+  type: ClusterIP                        # 기본값이지만 학습 의도를 명시합니다
+  selector:
+    app: sentiment-api                   # Deployment template.metadata.labels와 정확히 일치 (불일치 시 Endpoints 비어 503)
+  ports:
+    - name: http
+      port: 80                           # 클라이언트가 보는 Service 포트 (curl http://sentiment-api/...)
+      targetPort: 8000                   # 실제 트래픽이 도달하는 컨테이너 포트 (FastAPI)
+      protocol: TCP

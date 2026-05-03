@@ -1,0 +1,21 @@
+# Phase 1 / 03-service-networking — LoadBalancer Service (클라우드 프로덕션 형태)
+# 클라우드(GCP GKE / AWS EKS / Azure AKS)에서는 클러스터가 자동으로 외부 LB를 프로비저닝하고
+# EXTERNAL-IP에 공인 IP를 부여합니다. 로컬 minikube에서는 별도 셸에서 `minikube tunnel`을
+# 띄워야만 EXTERNAL-IP가 채워집니다(없이 두면 영원히 <pending>).
+# 03 토픽에서는 "프로덕션 형태가 어떻게 생겼는지" 한 번 보고 끝내고, 본 사용은 Phase 2 Ingress부터입니다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api-lb
+  labels:
+    app: sentiment-api
+    phase: "1"
+spec:
+  type: LoadBalancer
+  selector:
+    app: sentiment-api                   # 같은 Pod 집합을 또 다른 진입점으로 노출합니다
+  ports:
+    - name: http
+      port: 80                           # 외부 LB가 받는 포트 (curl http://EXTERNAL-IP/...)
+      targetPort: 8000                   # 컨테이너 포트
+      protocol: TCP

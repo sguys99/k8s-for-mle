@@ -283,4 +283,4 @@ minikube stop
 
 ## 다음 챕터
 
-➡️ [Phase 1 / 03-service-networking — Service 3종과 네트워킹](../03-service-networking/lesson.md) (작성 예정)
+➡️ [Phase 1 / 03-service-networking — Service 3종과 네트워킹](../03-service-networking/lesson.md)

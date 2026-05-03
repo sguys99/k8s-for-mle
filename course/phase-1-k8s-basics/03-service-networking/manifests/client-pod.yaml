@@ -1,0 +1,27 @@
+# Phase 1 / 03-service-networking — 클러스터 내부 호출 검증용 디버깅 Pod
+# Service의 ClusterIP/DNS는 클러스터 외부에서는 보이지 않습니다(외부 노출은 NodePort/LoadBalancer 몫).
+# 그래서 "내부에서 sentiment-api Service를 호출하면 정말 도달하는가"를 확인하려면 클러스터 안의 Pod이
+# 한 개 필요합니다. busybox는 sh / wget / nslookup 셋을 한 이미지에 갖추고 있어 1.5MB로 충분합니다.
+# labs 3단계에서만 사용하고, 8단계 정리에서 제거합니다.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+  labels:
+    role: debug-client
+    phase: "1"
+spec:
+  restartPolicy: Never                   # 일회성. 죽으면 다시 안 띄움 (학습 흐름에 적합)
+  containers:
+    - name: client
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+      command: ["sh", "-c", "sleep 36000"]   # 10시간 — labs 한 세션 동안 동일 Pod에 여러 번 exec 들어가기 위함
+      resources:
+        requests:
+          cpu: "10m"
+          memory: "16Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+  terminationGracePeriodSeconds: 5
