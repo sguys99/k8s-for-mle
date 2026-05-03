@@ -1,0 +1,21 @@
+# Phase 2 / 02-volumes-pvc — sentiment-api ClusterIP Service
+# 01 의 service.yaml 과 selector / 포트 / 타입 모두 동일합니다.
+# 본 토픽의 핵심은 Deployment 가 PVC + initContainer 로 진화해도 Service 는 손댈 필요가 없다는 점입니다.
+# selector(app=sentiment-api) 만 일치하면 어떤 Pod 든 같은 ClusterIP 로 라우팅됩니다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentiment-api
+  labels:
+    app: sentiment-api
+    phase: "2"
+    topic: "02-volumes-pvc"
+spec:
+  type: ClusterIP
+  selector:
+    app: sentiment-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

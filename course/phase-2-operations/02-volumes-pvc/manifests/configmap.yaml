@@ -1,0 +1,33 @@
+# Phase 2 / 02-volumes-pvc — 추론 설정용 ConfigMap (01 에서 가져와 두 가지 변경)
+# 변경 1: APP_VERSION "v1-cm" → "v1-pvc" — /ready 응답으로 본 토픽임을 즉시 식별
+# 변경 2: HF_HOME 키 신규 추가 — init/main 컨테이너가 같은 캐시 경로를 공유하도록 한 곳에서만 정의
+# 그 외 (LOG_LEVEL, inference.yaml) 는 01 과 동일하여 학습자 인지 부담 최소화.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentiment-api-config
+  labels:
+    app: sentiment-api
+    phase: "2"
+    topic: "02-volumes-pvc"
+data:
+  # ── envFrom 으로 환경 변수가 될 키 ───────────────────────────────────────
+  MODEL_NAME: "cardiffnlp/twitter-roberta-base-sentiment"
+  APP_VERSION: "v1-pvc"          # 01 의 "v1-cm" 와 구분
+  LOG_LEVEL: "INFO"
+
+  # ── PVC 캐시 경로 — 본 토픽에서 새로 추가 ───────────────────────────────
+  # transformers / huggingface_hub 라이브러리는 HF_HOME 이 설정되면
+  # 자동으로 $HF_HOME/hub 아래에서 모델 가중치를 찾고 저장합니다.
+  # init container 도 main container 도 이 한 줄만 보고 같은 PVC 경로를 사용 → 단일 진실 소스.
+  HF_HOME: "/cache"
+
+  # ── volumeMount 로 파일이 될 키 (01 과 동일) ────────────────────────────
+  inference.yaml: |
+    model:
+      name: cardiffnlp/twitter-roberta-base-sentiment
+      max_length: 128
+      top_k: 1
+    serving:
+      batch_size: 32
+      timeout_seconds: 30
