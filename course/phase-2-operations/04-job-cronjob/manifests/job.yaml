@@ -1,0 +1,116 @@
+# Phase 2 / 04-job-cronjob — 평가 데이터셋 일괄 추론을 수행하는 단발 Job
+#
+# 동작 흐름:
+#   1) (전제) 02 의 ConfigMap(sentiment-api-config) / Secret(sentiment-api-secrets) /
+#      PVC(model-cache) 가 default 네임스페이스에 살아있어야 합니다 (labs 0–1 단계에서 점검).
+#   2) 본 Job 적용 시 K8s controller 가 Pod 1개를 띄웁니다.
+#   3) Pod 가 sentiment-api:v1 이미지를 사용하지만 entrypoint 를 batch_inference.py 로 덮어써
+#      FastAPI 서버가 아닌 배치 스크립트로 실행됩니다.
+#   4) 스크립트가 /inputs/sample-input.jsonl 을 읽어 모델 예측을 붙인 결과를
+#      /results/inference-<timestamp>.jsonl 로 저장한 뒤 종료 (exit 0).
+#   5) Pod 가 Completed 로 전이 → Job status 의 COMPLETIONS 컬럼이 0/1 → 1/1 로 갱신.
+#
+# Deployment 와 다른 점 (lesson.md 1-1 표 참고):
+#   - replicas 가 아니라 completions/parallelism 으로 "총 몇 번 / 동시 몇 개" 를 표현
+#   - restartPolicy: Always 사용 불가 — OnFailure 또는 Never 만 허용 (자주 하는 실수 1번)
+#   - terminal phase 가 있음 (Complete / Failed). 다 끝나면 Pod 가 살아있을 필요 없음
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-inference-sample
+  labels:
+    app: sentiment-eval
+    phase: "2"
+    topic: "04-job-cronjob"
+    component: batch
+spec:
+  # ── Job 의 핵심 시간·재시도 필드 ──────────────────────────────────────────
+  # backoffLimit: 컨테이너 실패 시 최대 재시도 횟수. 기본 6 의 함정(자주 하는 실수 2번) 회피.
+  #              본 Job 은 정상 종료를 기대하지만 모델 다운로드 일시 실패 등을 위해 2회 여유.
+  backoffLimit: 2
+  # activeDeadlineSeconds: 잡 실행 시작 후 이 시간이 지나면 controller 가 강제 종료 (방어막).
+  #              모델 로딩 + 8건 추론은 1–2분이면 충분 → 10분 한도.
+  activeDeadlineSeconds: 600
+  # ttlSecondsAfterFinished: 잡 완료 후 이 시간이 지나면 Pod / Job 오브젝트가 자동 삭제.
+  #              미설정 시 영원히 남아 `kubectl get jobs/pods` 출력이 누적됨.
+  ttlSecondsAfterFinished: 1800   # 30분
+  # completions / parallelism: 본 토픽은 단일 Pod 시나리오. Indexed Job(여러 분할 처리) 은 Phase 4.
+  completions: 1
+  parallelism: 1
+
+  template:
+    metadata:
+      labels:
+        app: sentiment-eval
+        component: batch
+    spec:
+      # ── restartPolicy: Always 는 Job 에서 사용 불가 (자주 하는 실수 1번) ──
+      # OnFailure: 같은 Pod 안에서 컨테이너만 재시작. 모델 로딩 캐시가 살아있어 재시작이 빠름.
+      # Never:    실패 시 새 Pod 을 띄움. 격리가 강해 디버깅에는 유리하지만 매번 모델 재로딩.
+      restartPolicy: OnFailure
+
+      containers:
+        - name: batch
+          image: sentiment-api:v1                # Phase 0/01 에서 빌드 → minikube image load 로 적재
+          imagePullPolicy: IfNotPresent
+
+          # ── 02 의 ConfigMap / Secret 을 그대로 재사용 ────────────────────
+          # MODEL_NAME, HF_HOME, APP_VERSION, LOG_LEVEL 이 환경 변수로 주입됩니다.
+          # transformers 라이브러리가 HF_HOME=/cache 를 자동 인식해 02 PVC 의 캐시를 사용 → 다운로드 스킵.
+          envFrom:
+            - configMapRef:
+                name: sentiment-api-config       # 02 ConfigMap (labs 0 단계에서 존재 확인)
+            - secretRef:
+                name: sentiment-api-secrets      # 02 Secret  (private 모델 전환 시 HF_TOKEN 자동 사용)
+
+          # FastAPI 진입점(uvicorn ...) 대신 배치 스크립트로 entrypoint 를 덮어씀.
+          # ConfigMap 의 batch_inference.py 가 /scripts/batch_inference.py 로 마운트됨.
+          command: ["python", "/scripts/batch_inference.py"]
+          args:
+            - "--input=/inputs/sample-input.jsonl"
+            # --output 은 생략 → 스크립트 기본값(/results/inference-<timestamp>.jsonl) 사용
+
+          volumeMounts:
+            - name: model-cache                  # 02 PVC, 모델 가중치 캐시
+              mountPath: /cache
+            - name: scripts                      # ConfigMap 의 .py 스크립트
+              mountPath: /scripts
+              readOnly: true
+            - name: inputs                       # ConfigMap 의 sample-input.jsonl
+              mountPath: /inputs
+              readOnly: true
+            - name: results                      # 본 토픽 PVC, 추론 결과 누적
+              mountPath: /results
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "800Mi"
+            limits:
+              cpu: "1"
+              memory: "1500Mi"
+              # GPU 배치 추론 시 주석 해제 — Phase 4-1 (gpu-on-k8s) 에서 본격적으로 다룹니다.
+              # nvidia.com/gpu: 1
+
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache              # 02 의 PVC (labs 0 단계에서 존재 확인)
+        - name: scripts
+          configMap:
+            name: eval-scripts                  # 본 토픽 scripts-configmap.yaml
+            items:
+              - key: batch_inference.py
+                path: batch_inference.py
+              - key: evaluate.py
+                path: evaluate.py
+            defaultMode: 0555                   # 실행 권한 부여 (python 으로 호출하므로 필수는 아님)
+        - name: inputs
+          configMap:
+            name: eval-scripts                  # 같은 ConfigMap 의 sample-input.jsonl 만 별도 마운트
+            items:
+              - key: sample-input.jsonl
+                path: sample-input.jsonl
+        - name: results
+          persistentVolumeClaim:
+            claimName: eval-results             # 본 토픽 results-pvc.yaml

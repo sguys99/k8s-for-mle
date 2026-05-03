@@ -239,6 +239,6 @@ minikube stop
 
 ## 다음 챕터
 
-➡️ [Phase 2 / 04-job-cronjob — 배치 추론과 정기 평가 잡](../04-job-cronjob/lesson.md) (작성 예정)
+➡️ [Phase 2 / 04-job-cronjob — 배치 추론과 정기 평가 잡](../04-job-cronjob/lesson.md)
 
 다음 토픽에서는 본 토픽까지의 "오래 떠 있는 모델 서빙 (Deployment + Service + Ingress)" 와 대비되는 **단발성 / 주기적 워크로드** 를 다룹니다. 평가 데이터셋 일괄 추론 (Job), 매일 새벽 평가 메트릭 갱신 (CronJob), `backoffLimit`·`activeDeadlineSeconds`·`concurrencyPolicy` 같은 잡 전용 필드를 학습합니다. 본 토픽의 PVC 와 ConfigMap 은 그대로 재사용해 같은 모델로 배치 추론을 수행합니다.

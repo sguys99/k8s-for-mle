@@ -72,10 +72,10 @@
   - [x] labs/
   - [ ] minikube 검증 _(학습자가 labs 0–8단계 실행 후 갱신)_
 - [ ] **04-job-cronjob** — 배치 추론 Job, 일별 평가 CronJob, `backoffLimit`/`activeDeadlineSeconds`
-  - [ ] lesson.md
-  - [ ] 매니페스트/코드
-  - [ ] labs/
-  - [ ] minikube 검증
+  - [x] lesson.md
+  - [x] 매니페스트/코드
+  - [x] labs/
+  - [ ] minikube 검증 _(학습자가 labs 0–8단계 실행 후 갱신)_
 - [ ] **05-namespace-quota** — dev/staging/prod 네임스페이스, ResourceQuota/LimitRange
   - [ ] lesson.md
   - [ ] 매니페스트/코드

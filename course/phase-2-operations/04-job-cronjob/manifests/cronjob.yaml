@@ -1,0 +1,118 @@
+# Phase 2 / 04-job-cronjob — 매일 새벽 평가 데이터셋으로 모델을 재평가하는 CronJob
+#
+# 동작 흐름:
+#   1) controller-manager 가 schedule 표현식을 파싱해 timeZone(Asia/Seoul) 기준의 다음 실행 시각을 계산.
+#   2) 그 시각이 되면 jobTemplate 으로부터 Job 오브젝트를 1개 생성 (이름: daily-eval-<timestamp>).
+#   3) 그 Job 이 일반 Job 과 똑같이 Pod 을 띄워 evaluate.py 를 실행하고 /results/eval-YYYYMMDD.json 에 저장.
+#   4) successfulJobsHistoryLimit / failedJobsHistoryLimit 만큼만 과거 Job 보관 — 그 이전 것은 자동 삭제.
+#
+# 본 토픽 schedule "0 3 * * *" 는 운영 패턴(매일 새벽 3시 1회) 그대로입니다.
+# 다음 실행을 기다리지 않고 즉시 1번 시연하려면 labs 5 단계의 수동 트리거 명령을 사용합니다:
+#   kubectl create job batch-eval-manual --from=cronjob/daily-eval
+#
+# cron 표현식 참고:
+#   "0 3 * * *"     → 매일 03:00 (Asia/Seoul)
+#   "*/15 * * * *"  → 15분마다
+#   "0 */6 * * *"   → 6시간마다 정각
+#   "0 9 * * 1-5"   → 평일 09:00
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-eval
+  labels:
+    app: sentiment-eval
+    phase: "2"
+    topic: "04-job-cronjob"
+    component: cron
+spec:
+  schedule: "0 3 * * *"
+  # timeZone: K8s 1.27+ 에서 GA. 미지정 시 controller-manager 의 기본 TZ(보통 UTC) 가 적용되어
+  # 학습자가 의도한 새벽 3시(KST) 가 한국 정오 12시(UTC 03:00) 가 되는 함정 발생.
+  timeZone: "Asia/Seoul"
+
+  # concurrencyPolicy (자주 하는 실수 3번):
+  #   Allow   — (기본) 이전 실행이 안 끝나도 새로 시작. PVC 락 / GPU 메모리 충돌 위험.
+  #   Forbid  — 이전 실행이 끝날 때까지 새 실행 스킵. 운영 권장.
+  #   Replace — 이전 실행을 죽이고 새로 시작. 최신성이 중요한 잡(주기적 인덱스 갱신 등) 에 적합.
+  concurrencyPolicy: Forbid
+
+  # 과거 Job 보관 개수 — 미설정 시 기본값(success 3, failed 1) 이지만 명시 권장.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+
+  # startingDeadlineSeconds: controller 가 정전·재기동 등으로 schedule 시점을 놓쳤을 때
+  # 이 초 안에 라면 뒤늦게 실행, 지나면 그 회차는 포기. 미설정 시 무한 — 재기동 직후 폭주 위험.
+  startingDeadlineSeconds: 600   # 10분 늦은 시작까지 허용
+
+  # 운영 중 일시 중지하려면 `kubectl patch cronjob daily-eval -p '{"spec":{"suspend":true}}'`.
+  # suspend: false (기본) 가 정상 동작.
+  # suspend: false
+
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800        # 30분 — 데이터셋이 커져도 안전 마진
+      ttlSecondsAfterFinished: 86400     # 1일 후 자동 정리 (history limit 와 별개의 안전망)
+      template:
+        metadata:
+          labels:
+            app: sentiment-eval
+            component: cron
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: eval
+              image: sentiment-api:v1
+              imagePullPolicy: IfNotPresent
+              envFrom:
+                - configMapRef:
+                    name: sentiment-api-config
+                - secretRef:
+                    name: sentiment-api-secrets
+              # `$(date ...)` 같은 shell 치환을 쓰려면 entrypoint 를 sh -c 로 감싸야 합니다.
+              # python 진입점에서는 셸이 끼지 않아 $(...) 가 그대로 문자열로 전달되기 때문입니다.
+              # 본 토픽은 evaluate.py 안의 datetime 으로 파일명을 만들어 sh 래핑이 불필요합니다.
+              command: ["python", "/scripts/evaluate.py"]
+              args:
+                - "--input=/inputs/sample-input.jsonl"
+                # --output 은 생략 → 스크립트 기본값(/results/eval-<YYYYMMDD>.json) 사용
+              volumeMounts:
+                - name: model-cache
+                  mountPath: /cache
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: inputs
+                  mountPath: /inputs
+                  readOnly: true
+                - name: results
+                  mountPath: /results
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: "800Mi"
+                limits:
+                  cpu: "1"
+                  memory: "1500Mi"
+          volumes:
+            - name: model-cache
+              persistentVolumeClaim:
+                claimName: model-cache
+            - name: scripts
+              configMap:
+                name: eval-scripts
+                items:
+                  - key: batch_inference.py
+                    path: batch_inference.py
+                  - key: evaluate.py
+                    path: evaluate.py
+                defaultMode: 0555
+            - name: inputs
+              configMap:
+                name: eval-scripts
+                items:
+                  - key: sample-input.jsonl
+                    path: sample-input.jsonl
+            - name: results
+              persistentVolumeClaim:
+                claimName: eval-results

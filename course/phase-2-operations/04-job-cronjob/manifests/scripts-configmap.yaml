@@ -1,0 +1,133 @@
+# Phase 2 / 04-job-cronjob — 배치 추론 / 평가 스크립트와 샘플 입력을 담은 ConfigMap
+#
+# 새 Docker 이미지를 빌드하지 않고 sentiment-api:v1 을 그대로 재사용하기 위한 패턴입니다.
+# sentiment-api:v1 에는 이미 transformers, huggingface_hub, torch 가 들어 있으므로
+# 본 ConfigMap 의 스크립트만 마운트해 실행하면 됩니다.
+#
+# 운영 변형:
+#   - 입력 데이터는 보통 S3 / GCS / 사내 데이터 레이크 → init container 로 받아 입력 PVC 로 마운트
+#   - 스크립트는 보통 Docker 이미지에 포함 (re-build 가능한 CI 가 있다는 전제)
+#   - 본 토픽은 학습 단순화를 위해 ConfigMap 한 곳에 다 묶었습니다 (`kubectl edit` 만으로 수정 가능)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eval-scripts
+  labels:
+    app: sentiment-eval
+    phase: "2"
+    topic: "04-job-cronjob"
+data:
+  # ── 배치 추론 스크립트 ────────────────────────────────────────────────────
+  # /inputs/sample-input.jsonl 을 한 줄씩 읽어 각 문장에 모델 예측을 붙여
+  # /results/inference-<timestamp>.jsonl 로 저장합니다.
+  # transformers.pipeline 은 첫 호출에 모델을 RAM 에 적재 → 02 의 PVC 캐시(/cache) 에서 가중치를 읽음.
+  batch_inference.py: |
+    import argparse, json, os, sys
+    from datetime import datetime
+    from transformers import pipeline
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="/inputs/sample-input.jsonl")
+    parser.add_argument("--output", default=None)
+    parser.add_argument("--model", default=os.environ.get("MODEL_NAME", "cardiffnlp/twitter-roberta-base-sentiment"))
+    args = parser.parse_args()
+
+    out_path = args.output or f"/results/inference-{datetime.utcnow():%Y%m%dT%H%M%S}.jsonl"
+    print(f"[batch] model={args.model} input={args.input} output={out_path}", flush=True)
+
+    clf = pipeline("text-classification", model=args.model)
+
+    n = 0
+    with open(args.input) as fin, open(out_path, "w") as fout:
+        for line in fin:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            pred = clf(row["text"])[0]
+            row["pred_label"] = pred["label"]
+            row["pred_score"] = float(pred["score"])
+            fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+            n += 1
+
+    print(f"[batch] done. wrote {n} rows -> {out_path}", flush=True)
+
+  # ── 평가 스크립트 ─────────────────────────────────────────────────────────
+  # 같은 입력으로 추론한 뒤 정답 라벨(label) 과 예측 라벨(pred_label) 을 비교해
+  # accuracy / per-label precision·recall 을 계산하고 /results/eval-<YYYYMMDD>.json 으로 저장합니다.
+  # CronJob 의 일별 메트릭으로 사용됩니다 (모델 드리프트 추적).
+  evaluate.py: |
+    import argparse, json, os
+    from collections import defaultdict
+    from datetime import datetime
+    from transformers import pipeline
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="/inputs/sample-input.jsonl")
+    parser.add_argument("--output", default=None)
+    parser.add_argument("--model", default=os.environ.get("MODEL_NAME", "cardiffnlp/twitter-roberta-base-sentiment"))
+    args = parser.parse_args()
+
+    out_path = args.output or f"/results/eval-{datetime.utcnow():%Y%m%d}.json"
+    print(f"[eval] model={args.model} input={args.input} output={out_path}", flush=True)
+
+    clf = pipeline("text-classification", model=args.model)
+
+    total = 0
+    correct = 0
+    tp = defaultdict(int)
+    fp = defaultdict(int)
+    fn = defaultdict(int)
+
+    with open(args.input) as fin:
+        for line in fin:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            gold = row["label"]
+            pred = clf(row["text"])[0]["label"]
+            total += 1
+            if pred == gold:
+                correct += 1
+                tp[gold] += 1
+            else:
+                fp[pred] += 1
+                fn[gold] += 1
+
+    def safe_div(a, b):
+        return a / b if b else 0.0
+
+    per_label = {}
+    for lbl in set(list(tp) + list(fp) + list(fn)):
+        precision = safe_div(tp[lbl], tp[lbl] + fp[lbl])
+        recall = safe_div(tp[lbl], tp[lbl] + fn[lbl])
+        per_label[lbl] = {"precision": round(precision, 4), "recall": round(recall, 4)}
+
+    result = {
+        "model": args.model,
+        "evaluated_at": datetime.utcnow().isoformat() + "Z",
+        "total": total,
+        "correct": correct,
+        "accuracy": round(safe_div(correct, total), 4),
+        "per_label": per_label,
+    }
+
+    with open(out_path, "w") as fout:
+        json.dump(result, fout, indent=2, ensure_ascii=False)
+
+    print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
+    print(f"[eval] done -> {out_path}", flush=True)
+
+  # ── 평가용 샘플 입력 (정답 라벨 포함, jsonl) ────────────────────────────
+  # 운영에서는 S3 의 수만 건 데이터셋. 본 토픽은 학습용으로 8건만 둡니다.
+  # cardiffnlp/twitter-roberta-base-sentiment 의 라벨: LABEL_0=Negative, LABEL_1=Neutral, LABEL_2=Positive
+  sample-input.jsonl: |
+    {"id": 1, "text": "I love this new model, it works perfectly", "label": "LABEL_2"}
+    {"id": 2, "text": "The service is acceptable, nothing special", "label": "LABEL_1"}
+    {"id": 3, "text": "Worst experience ever, completely broken", "label": "LABEL_0"}
+    {"id": 4, "text": "Absolutely fantastic results, highly recommended", "label": "LABEL_2"}
+    {"id": 5, "text": "It just exists, no strong feelings either way", "label": "LABEL_1"}
+    {"id": 6, "text": "Terrible support and the product crashes daily", "label": "LABEL_0"}
+    {"id": 7, "text": "Great improvements in the latest release", "label": "LABEL_2"}
+    {"id": 8, "text": "I am not sure how I feel about this update", "label": "LABEL_1"}

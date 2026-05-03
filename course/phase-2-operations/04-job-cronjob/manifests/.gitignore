@@ -1,0 +1,9 @@
+# 실제 자격 증명이 들어간 Secret 매니페스트는 git 에 커밋하지 않습니다.
+# 학습자가 실 토큰을 쓰고 싶을 때는 secret-real.yaml 같은 이름으로 별도 파일을 만들어 적용하세요.
+secret-real.yaml
+secret-*.local.yaml
+*.secret.yaml
+
+# 학습자가 lab 중 임시로 만들 수 있는 결과 export 파일
+result-export*.json
+*.tmp

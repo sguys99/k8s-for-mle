@@ -1,0 +1,33 @@
+# Phase 2 / 04-job-cronjob — 평가 결과 누적 저장용 PVC
+#
+# 02 의 model-cache PVC 와 의도적으로 분리한 이유:
+#   - model-cache : 모델 가중치(~500MB). 거의 변하지 않음. 여러 토픽이 공유. 영구 보존 권장.
+#   - eval-results: 매일 평가 잡이 결과 파일을 추가로 쓰는 누적 PVC. 한두 달에 한 번 비울 수 있음.
+#                   라이프사이클(보존 정책 / 백업 주기) 이 모델 캐시와 다르므로 PVC 를 분리합니다.
+#
+# 동작 흐름:
+#   1) 본 PVC 를 적용하면 minikube 의 기본 StorageClass(`standard`, k8s.io/minikube-hostpath)
+#      가 자동으로 PV 를 1개 만들어 PVC 와 묶습니다 (동적 프로비저닝).
+#   2) job.yaml 의 batch-inference 컨테이너가 /results 에 마운트해 inference-*.jsonl 을 씁니다.
+#   3) cronjob.yaml 의 daily-eval 컨테이너도 같은 PVC 를 /results 에 마운트해 eval-YYYYMMDD.json 을 누적합니다.
+#
+# accessModes 선택 이유:
+#   ReadWriteOnce(RWO) — minikube hostPath 의 한계 (02 pvc.yaml 주석과 동일).
+#   같은 노드에 떠 있는 Job/CronJob Pod 이 같은 PVC 를 RWO 로 함께 마운트하는 것은 가능합니다.
+#   단, concurrencyPolicy: Allow 로 동시 실행되면 두 Pod 이 같은 파일을 동시 write 해 손상될 수 있어
+#   cronjob.yaml 은 concurrencyPolicy: Forbid 로 두었습니다 (lesson.md 자주 하는 실수 3번).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: eval-results
+  labels:
+    app: sentiment-eval                # 02 sentiment-api 와 의도적으로 다른 라벨 — 라이프사이클 분리 표현
+    phase: "2"
+    topic: "04-job-cronjob"
+spec:
+  accessModes:
+    - ReadWriteOnce                    # minikube hostPath 한계, 02 pvc.yaml 과 동일
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi                     # eval-YYYYMMDD.json (~수 KB) 가 매일 누적 — 1Gi 면 수십 년치
