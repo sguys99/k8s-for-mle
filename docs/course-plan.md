@@ -102,10 +102,10 @@
   - [x] labs/
   - [ ] minikube 검증 _(학습자가 labs 0–10단계 실행 후 갱신)_
 - [ ] **04-rbac-serviceaccount** — ServiceAccount/Role/RoleBinding, 최소 권한, kubeconfig 분리
-  - [ ] lesson.md
-  - [ ] 매니페스트/코드
-  - [ ] labs/
-  - [ ] minikube 검증
+  - [x] lesson.md
+  - [x] 매니페스트/코드
+  - [x] labs/
+  - [ ] minikube 검증 _(학습자가 labs 0–10단계 실행 후 갱신)_
 
 ---
 

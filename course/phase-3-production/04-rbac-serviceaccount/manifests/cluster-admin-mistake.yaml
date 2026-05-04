@@ -1,0 +1,38 @@
+# cluster-admin-mistake.yaml — 의도적으로 ‘틀린’ 매니페스트.
+#
+# ⚠️⚠️⚠️ 절대 prod 클러스터에 잔존시키지 마세요 ⚠️⚠️⚠️
+#
+# 본 파일은 Phase 3/04 lab 2 단계에서 *권한 과다 부여의 위험* 을 손에 잡히게 보여주기 위해 만든 학습용 매니페스트입니다.
+# 적용 → impersonation 으로 효과 확인 → 즉시 삭제 가 워크플로의 표준이며, 절대 *그대로 두는 매니페스트가 아닙니다*.
+#
+# 시연하는 함정:
+#   ① "default ServiceAccount" 는 모든 namespace 에 자동 생성됩니다 (kube-controller-manager 가 ServiceAccountController 로 생성).
+#   ② 모든 Pod 은 spec.serviceAccountName 미지정 시 default SA 를 사용합니다 (Phase 3/01–03 의 sentiment-api 가 그 케이스였음).
+#   ③ ClusterRoleBinding 으로 default SA 에 cluster-admin 을 부여하면 prod namespace 의 *모든 Pod* 이 즉시 cluster-admin 권한.
+#   ④ Pod 안에 마운트된 SA 토큰 (자주 하는 실수 3번 참고) 으로 cluster API 를 호출하면 cluster-admin 처럼 동작 → cluster 통째 노출.
+#
+# 실세계 시나리오:
+#   디버깅 중 "권한 부족" 에러가 나서 임시로 cluster-admin 을 default SA 에 붙여놓고 트러블슈팅 후 "지웠다고 생각했는데 안 지운"
+#   매니페스트가 git 이나 helm release 에 잔존하는 사고. SOC2 / ISO27001 감사에서 단골로 발견되는 케이스.
+#
+# 진단 명령 (정기 점검):
+#   kubectl get clusterrolebinding -o json | jq '.items[]
+#       | select(.subjects[]? | (.kind=="ServiceAccount") and (.name=="default"))
+#       | .metadata.name'
+#   → 결과가 비어 있어야 합니다. 비어 있지 않으면 본 파일 같은 잔존 binding 이 있다는 신호.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dangerous-default-sa-cluster-admin     # 이름에 ‘dangerous’ 명시 — 무심코 두지 않도록
+  labels:
+    purpose: phase-3-04-mistake-demo            # 학습 후 일괄 삭제용 라벨
+    phase-3-04: mistake-must-be-deleted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin                           # K8s 가 자동 생성하는 super-user ClusterRole — verbs ["*"] resources ["*"] apiGroups ["*"]
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: prod                             # prod 의 default SA 를 cluster 통째로 owner 화

@@ -30,7 +30,7 @@ Phase 2/05 까지 dev / prod 두 namespace 에 거의 같은 5개 자원(ConfigM
 | [01](./01-helm-chart/) | Helm Chart | Phase 2/05 의 dev/prod 매니페스트 두 벌을 단일 차트로 패키징, `values-dev.yaml` / `values-prod.yaml` 환경 분리, 4가지 라이프사이클 명령(install/upgrade/rollback/uninstall), `helm template` / `--dry-run` / `helm history` 디버깅 |
 | [02](./02-prometheus-grafana/) | Prometheus + Grafana | kube-prometheus-stack 설치, 01 차트에 `templates/servicemonitor.yaml` 추가로 FastAPI `/metrics` 자동 스크래핑, PromQL 핵심 5개로 throughput / p95 latency / error rate 계산, Grafana 4 패널 대시보드 import |
 | [03](./03-autoscaling-hpa/) | Autoscaling (HPA) | 01 차트의 `autoscaling` placeholder 활성화로 CPU 기반 HPA, `prometheus-adapter` 설치로 02 의 `predict_requests_total` 을 `custom.metrics.k8s.io` API 로 노출해 RPS 기반 두 번째 HPA, `behavior` 비대칭 (scaleUp 0s / scaleDown 300s), `hey-job` 부하 테스트로 scale-out/in 직접 관찰, VPA·Cluster Autoscaler·KEDA 개념 비교 |
-| 04 | RBAC & ServiceAccount | (작성 예정) ServiceAccount / Role / RoleBinding, 최소 권한, kubeconfig 분리 |
+| [04](./04-rbac-serviceaccount/) | RBAC & ServiceAccount | 01 차트의 `serviceAccount` placeholder 활성화로 sentiment-api 가 전용 SA 로 동작 + 토큰 마운트 차단 (`automountServiceAccountToken: false`), `kubectl auth can-i` + impersonation 으로 권한 진단, Role + RoleBinding 의 부여/회수 효과 직접 비교, 03 토픽이 핸드오프한 prometheus-adapter ClusterRole 3종 (auth-delegator / server-resources / resource-reader) 분석으로 controller-style RBAC 패턴 디코딩 |
 
 ## 권장 진행 순서
 

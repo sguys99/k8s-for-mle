@@ -1,0 +1,166 @@
+# prometheus-adapter-rbac-snapshot.yaml — Phase 3/03 가 helm install 한 prometheus-adapter release 가 만든 RBAC 묶음의 *읽기용 정적 dump*.
+#
+# 본 파일의 목적은 *실행* 이 아니라 *학습* 입니다.
+#   - Phase 3/03 lab 단계를 모두 끝내고 prom-adapter 를 uninstall 한 학습자도 RBAC 매니페스트를 직접 읽을 수 있게.
+#   - "controller-style 워크로드의 RBAC 가 application-level 워크로드의 RBAC 와 어떻게 다른가" 를 한 파일에서 비교 가능하게.
+#
+# ⚠️ kubectl apply 하지 마세요. apply 한다고 prometheus-adapter 가 동작하는 것도 아니고 (Deployment / APIService 등이 함께 필요함),
+#    학습 후 cleanup 만 복잡해집니다. 본 파일은 "텍스트로 읽는 자료" 입니다.
+#
+# 출처:
+#   prometheus-community/prometheus-adapter chart v4.x 가 기본값으로 만드는 RBAC 자원 (release 이름 'prom-adapter' 가정).
+#   helm template prom-adapter prometheus-community/prometheus-adapter -n monitoring | yq 'select(.kind | test("Role|Binding|APIService"))'
+#   로 추출한 결과를 한국어 주석과 함께 정리한 것입니다.
+#
+# 본 토픽 lesson.md 1-6 절 + labs Step 8 단계가 본 파일을 직접 인용합니다.
+#
+# ─ 자원 목록 (5개) ──────────────────────────────────────────────────────────
+#   1) ServiceAccount      : prom-adapter 컨테이너가 사용하는 신원
+#   2) ClusterRoleBinding  : SA → ClusterRole `system:auth-delegator` (위임 인증)
+#   3) RoleBinding         : SA → ClusterRole `extension-apiserver-authentication-reader` (kube-system 의 ConfigMap read)
+#   4) ClusterRole + ClusterRoleBinding : `prom-adapter-server-resources` (자기 APIService 등록·관리)
+#   5) ClusterRole + ClusterRoleBinding : `prom-adapter-resource-reader` (kube-state-metrics / metrics-server 데이터 read)
+#
+# 왜 셋(3종 ClusterRole) 다 필요한가:
+#   - (a) auth-delegator: 누가 호출했는지 검증 — kube-apiserver 가 "/apis/custom.metrics.k8s.io/..." 호출자의 토큰을
+#         prom-adapter 에게 위임 검증 요청을 보내려면 prom-adapter 가 tokenreviews / subjectaccessreviews 를 호출할 권한.
+#   - (b) extension-apiserver-authentication-reader: kube-system 의 ConfigMap `extension-apiserver-authentication` 을 read.
+#         이 ConfigMap 에 들어 있는 client-ca 인증서로 prom-adapter 가 들어오는 요청의 client cert 를 검증.
+#   - (c) server-resources / resource-reader: prom-adapter 가 kube-state-metrics 와 metrics-server 의 raw 데이터를 읽고,
+#         자기 자신을 APIService 로 등록·관리하기 위한 권한. (Phase 3/03 lesson.md 1-4 절의 `custom.metrics.k8s.io` 가 prom-adapter 에 도달하는 다이어그램)
+
+# ============================================================================
+# 1) ServiceAccount — prom-adapter 의 신원
+# ============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prom-adapter-prometheus-adapter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/instance: prom-adapter
+---
+# ============================================================================
+# 2) ClusterRoleBinding — `system:auth-delegator` (위임 인증)
+# ============================================================================
+# `system:auth-delegator` 는 K8s 가 부트스트랩 시 자동 생성하는 *내장 ClusterRole*.
+#   rules:
+#     - apiGroups: ["authentication.k8s.io"]   resources: ["tokenreviews"]      verbs: ["create"]
+#     - apiGroups: ["authorization.k8s.io"]    resources: ["subjectaccessreviews"] verbs: ["create"]
+#
+# 이 두 verb 가 왜 필요한가: kube-apiserver 가 `/apis/custom.metrics.k8s.io/...` 호출자의 신원/권한을 prom-adapter 에게 위임 검증.
+# 학습 포인트: ClusterRoleBinding 은 binding 의 namespace 가 없습니다 (cluster-scoped). subjects 의 SA 만 namespace 를 가집니다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prom-adapter-prometheus-adapter:system:auth-delegator
+  labels:
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/instance: prom-adapter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator                    # 내장 ClusterRole — kubectl describe clusterrole system:auth-delegator 로 rules 확인
+subjects:
+  - kind: ServiceAccount
+    name: prom-adapter-prometheus-adapter
+    namespace: monitoring
+---
+# ============================================================================
+# 3) RoleBinding — extension-apiserver-authentication ConfigMap 읽기 (kube-system namespace 에 한정)
+# ============================================================================
+# Role 이 아닌 *ClusterRole* `extension-apiserver-authentication-reader` 를 RoleBinding 으로 묶음.
+# 의미: ClusterRole 의 권한이지만 RoleBinding 의 namespace (kube-system) 안에서만 유효.
+#       Phase 3/04 lesson.md 1-2 절의 "ClusterRole + RoleBinding = 그 namespace 로 축소" 패턴이 이 자리에 정확히 등장합니다.
+# 효과: prom-adapter 가 kube-system/extension-apiserver-authentication ConfigMap 만 read 가능. 다른 namespace 의 같은 ClusterRole 권한은 없음.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prom-adapter-prometheus-adapter-auth-reader
+  namespace: kube-system                         # binding 의 namespace = 권한이 발휘되는 namespace
+  labels:
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/instance: prom-adapter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole                              # ClusterRole 을 RoleBinding 으로 — namespace 축소 패턴
+  name: extension-apiserver-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: prom-adapter-prometheus-adapter
+    namespace: monitoring                        # cross-namespace SA 도 가능 — RoleBinding 의 namespace 와 SA 의 namespace 는 다를 수 있음
+---
+# ============================================================================
+# 4) ClusterRole + ClusterRoleBinding — APIService 등록·관리
+# ============================================================================
+# prom-adapter 는 자기 자신을 `v1beta1.custom.metrics.k8s.io` APIService 로 *등록* 합니다.
+# 그래야 학습자가 `kubectl get --raw "/apis/custom.metrics.k8s.io/..."` 를 호출했을 때 kube-apiserver 가 prom-adapter 로 라우팅.
+# 등록·해제 / 다른 컴포넌트 정보 조회 / 수평 리스트가 필요하므로 다음 verbs 가 모인 ClusterRole 이 필요.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prom-adapter-prometheus-adapter-server-resources
+  labels:
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/instance: prom-adapter
+rules:
+  - apiGroups: ["apiregistration.k8s.io"]
+    resources: ["apiservices"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]                    # 자기 설정 ConfigMap (rules.yaml) 을 read
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prom-adapter-prometheus-adapter-server-resources
+  labels:
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/instance: prom-adapter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prom-adapter-prometheus-adapter-server-resources
+subjects:
+  - kind: ServiceAccount
+    name: prom-adapter-prometheus-adapter
+    namespace: monitoring
+---
+# ============================================================================
+# 5) ClusterRole + ClusterRoleBinding — kube-state-metrics / metrics-server 데이터 read
+# ============================================================================
+# prom-adapter 가 PromQL 을 던질 때 *어떤 K8s 자원에 매핑할지* 를 결정하려면 namespace / pod / service / node 메타데이터가 필요.
+# 또한 metrics.k8s.io 의 raw 데이터를 보조 신호로 사용 가능.
+# verbs 가 모두 read-only 인 점이 중요 — controller-style 이라도 *권한은 read 만* 이 디자인 원칙.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prom-adapter-prometheus-adapter-resource-reader
+  labels:
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/instance: prom-adapter
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "pods", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prom-adapter-prometheus-adapter-resource-reader
+  labels:
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/instance: prom-adapter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prom-adapter-prometheus-adapter-resource-reader
+subjects:
+  - kind: ServiceAccount
+    name: prom-adapter-prometheus-adapter
+    namespace: monitoring

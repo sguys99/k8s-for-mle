@@ -1,0 +1,35 @@
+# templates/role.yaml — Phase 3/04 (RBAC) 가 추가한 namespaced Role.
+#
+# ⚠️ rules 가 의도적으로 비어 있는 이유:
+#   sentiment-api 같은 추론 워크로드는 K8s API 를 호출하지 않습니다 (envFrom 으로 ConfigMap/Secret 을
+#   "Pod 시작 시점에" 환경변수로 받아오는 흐름이라 런타임에는 API 가 필요 없음).
+#   "최소 권한 원칙 = 권한 없음" 을 코드로 표현한 것이 본 Role 의 빈 rules 입니다.
+#
+#   학습 단계에서 직접 효과를 보려면 Phase 3/04 lab 6 단계처럼 `secrets/get` 같은 rule 을 임시로 추가하고
+#   `kubectl auth can-i ... --as=system:serviceaccount:prod:sentiment-api` 결과가 어떻게 변하는지 실험합니다.
+#
+# 왜 그래도 Role 을 *생성* 하는가:
+#   ① RoleBinding 의 roleRef 가 "존재하지 않는 Role" 을 가리키면 RoleBinding 자체는 만들어지지만 권한 부여가 안 됨 → 진단 어려움.
+#   ② Phase 4 의 ML 워크로드 (Argo Workflow runner, Ray autoscaler 등) 가 자기 namespace 자원을 watch 해야 하는 시점에
+#      `rules` 만 채우면 되도록 *자리* 를 미리 잡아둡니다.
+#
+# 본 Role 이 의도적으로 *namespaced* 인 이유:
+#   sentiment-api 가 자기 namespace 만 보면 충분 → ClusterRole 까지 갈 이유 없음. cluster 단위 권한이 필요해지면
+#   그건 *controller* 워크로드 (KServe / prom-adapter) 의 영역이지 추론 데이터 플레인의 영역이 아닙니다.
+
+{{- if and .Values.serviceAccount.create .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sentiment-api.serviceAccountName" . }}
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+rules:
+{{- if .Values.rbac.rules }}
+  # values 에서 rule 을 명시적으로 주입한 경우 (학습용) — 보통 비어 있음.
+  {{- toYaml .Values.rbac.rules | nindent 2 }}
+{{- else }}
+  # 비어 있는 rules — 의도된 "권한 없음" 상태. lab 6 단계에서 임시로 채워 효과 비교.
+  []
+{{- end }}
+{{- end }}

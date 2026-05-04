@@ -120,5 +120,22 @@ ingress:
   path: /
 
 serviceAccount:
-  create: false                                # Phase 3/04 (RBAC) 에서 true 로
+  create: false                                # Phase 3/04 (RBAC) 에서 true 로 — values-prod.yaml 가 활성화
   name: ""                                     # 비우면 _helpers.tpl 의 sentiment-api.serviceAccountName 가 release 이름 사용
+  # automountToken: 추론 Pod 은 K8s API 호출이 거의 없으므로 토큰 마운트 차단이 기본.
+  #   true 로 켤 경우는 Pod 안 코드가 in-cluster client (kubernetes-python, k8s-go) 로 자기 namespace 자원을 watch 할 때.
+  #   Phase 4 의 KServe / Argo runner 같은 controller-style 워크로드가 그 사례 (Phase 3/04 lesson.md 1-5 참고).
+  automountToken: false
+  # annotations: IRSA (EKS) / Workload Identity (GKE) 결합 시점에 채움. minikube 학습 환경에선 비워둠.
+  annotations: {}
+
+rbac:
+  create: false                                # Phase 3/04 (RBAC) 에서 true 로 — Role + RoleBinding 같이 생성
+  # rules: 비어 있으면 templates/role.yaml 가 `rules: []` 로 렌더 → "최소 권한 = 권한 없음" (의도된 default).
+  #   학습 단계에서 임시로 권한 부여 효과를 보려면 lab 6 단계처럼 채워서 helm upgrade.
+  #   예 (sentiment-api 가 자기 ConfigMap 1개만 읽도록):
+  #     - apiGroups: [""]
+  #       resources: ["configmaps"]
+  #       resourceNames: ["sentiment-api-config"]   # resourceNames 로 *특정 ConfigMap* 까지 범위 좁힘 — 진짜 최소 권한
+  #       verbs: ["get"]
+  rules: []

@@ -1,0 +1,32 @@
+# templates/rolebinding.yaml — Phase 3/04 (RBAC) 가 추가한 RoleBinding.
+#
+# 결합 규칙:
+#   Role + RoleBinding (둘 다 namespaced) = "이 namespace 안에서만" 권한 부여.
+#   - Role 이 ClusterRole 였다면 권한이 cluster 단위로 ‘되었을’ 것이고
+#   - RoleBinding 이 ClusterRoleBinding 였다면 namespace 경계가 사라졌을 것.
+#   본 차트는 양쪽 다 namespaced — sentiment-api 가 자기 namespace 밖으로 나갈 일이 없는 추론 데이터 플레인이기 때문.
+#
+# subjects:
+#   ServiceAccount 가 1명. 같은 RoleBinding 으로 다른 SA / User / Group 까지 묶을 수도 있지만, 본 차트는 자기 SA 만 묶습니다 —
+#   "한 RoleBinding 은 한 책임" 가독성 표준.
+#
+# Phase 3/04 lab 7 단계는 이 RoleBinding 을 *delete* → impersonation 으로 권한 사라짐 확인 → 다시 *apply*  → 권한 복귀
+# 를 직접 실행해 RoleBinding 의 의미를 손에 잡히게 합니다.
+
+{{- if and .Values.serviceAccount.create .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sentiment-api.serviceAccountName" . }}
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+roleRef:
+  # roleRef 는 immutable — 한 번 만들면 다른 Role 을 가리키도록 변경 불가. 변경 필요 시 RoleBinding 재생성.
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "sentiment-api.serviceAccountName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sentiment-api.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}    # subjects 의 namespace 는 SA 가 사는 namespace — RoleBinding namespace 와 같아도 명시 권장 (cross-namespace SA 도 가능)
+{{- end }}

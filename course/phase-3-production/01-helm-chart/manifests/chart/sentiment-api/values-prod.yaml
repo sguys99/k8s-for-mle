@@ -52,3 +52,18 @@ autoscaling:
         - type: Percent
           value: 100                           # 한 번의 평가 윈도우에 최대 100% 증가 (2 → 4 → 8)
           periodSeconds: 60
+
+# ─ RBAC (Phase 3/04 에서 활성화) ─────────────────────────────────────────────
+# prod 환경의 의도된 상태:
+#   - 전용 ServiceAccount (release 이름) 사용 — default SA 의존 제거
+#   - Pod / SA 양쪽 모두 토큰 마운트 차단 (자주 하는 실수 3번 방지)
+#   - Role 은 생성하지만 rules 비움 — 진짜 최소 권한 (Phase 3/04 lesson.md 1-5 (a) 패턴)
+serviceAccount:
+  create: true
+  name: ""                                     # 빈 값 → _helpers.tpl 가 "sentiment-api" 반환
+  automountToken: false                        # 추론 Pod 의 보안 표준
+  annotations: {}                              # EKS/GKE 환경에선 IRSA / Workload Identity 의 IAM role ARN 을 채움
+
+rbac:
+  create: true
+  rules: []                                    # 의도적으로 비움 — sentiment-api 는 K8s API 호출이 필요 없는 워크로드

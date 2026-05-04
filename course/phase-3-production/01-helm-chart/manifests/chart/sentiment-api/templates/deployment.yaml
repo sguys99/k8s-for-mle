@@ -32,6 +32,14 @@ spec:
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      # Phase 3/04 가 추가:
+      #   serviceAccount.create=false (default) → 헬퍼가 "default" 반환 → Pod 가 namespace 의 default SA 사용 (Phase 3/01–03 동작 동일)
+      #   serviceAccount.create=true → 헬퍼가 release 이름의 전용 SA 반환 → templates/serviceaccount.yaml 가 만든 SA 사용
+      serviceAccountName: {{ include "sentiment-api.serviceAccountName" . }}
+      # Pod 레벨에서도 토큰 마운트를 차단합니다.
+      #   SA 자체에 automountServiceAccountToken=false 가 걸려 있어도 Pod 의 값이 우선이라
+      #   Pod 에 명시하면 default SA 를 쓰는 환경에서도 토큰이 마운트되지 않습니다 (이중 안전장치).
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken | default false }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
