@@ -1,0 +1,100 @@
+# sentiment-gpu-deployment.yaml — Phase 1/04 의 sentiment-api Deployment 에 GPU 자원을 추가한 버전
+#
+# Phase 1/04 [course/phase-1-k8s-basics/04-serve-classification-model/manifests/deployment.yaml]
+# 와의 *유일한 차이* 는 다음 4 군데입니다 (diff 로 비교하면 학습 효과가 큽니다).
+#   ① resources.limits / requests 에 nvidia.com/gpu: 1 추가
+#   ② nodeSelector 로 GPU 노드 양수 매칭
+#   ③ tolerations 로 GPU 노드 taint 허용
+#   ④ env 에 CUDA_VISIBLE_DEVICES 명시 (GPU 인덱스 0 만 사용)
+#
+# 모델 / 이미지 / probe 설정은 Phase 1/04 와 *완전히 동일* — 같은 sentiment-api:v1 이미지가
+# CPU 로도, GPU 로도 동작합니다 (transformers 가 자동으로 device 를 고름).
+#
+# Track A (minikube, GPU 없음): `kubectl apply --dry-run=server` 로 매니페스트 정합성만 확인.
+#   실제 apply 는 Pending 으로 끝납니다 (GPU 자원이 없으므로) — 그 동작 자체가 sentiment-gpu-mistake.yaml
+#   의 시연 포인트입니다. Track A 는 이 파일을 *교본* 으로만 읽고, 실행은 mistake 쪽으로.
+#
+# Track B (GKE / 로컬 GPU): apply → Pod 가 Running 상태가 된 뒤 `kubectl exec` + `nvidia-smi` 로
+#   GPU 메모리에 모델이 로드된 것을 직접 확인 (모델 ~500MB 가 GPU 메모리에 올라감).
+#
+# ⚠ Track B 에서 sentiment-api:v1 이미지를 GKE 가 못 풉니다 (minikube 내부 이미지). 다음 중 하나:
+#   (a) GCR / Artifact Registry 에 sentiment-api:v1 을 push 한 뒤 image 필드를 그 경로로 변경
+#   (b) public 이미지로 잠시 대체 (단순 검증용 — 본 매니페스트가 의도하는 추론까지 가지는 못함)
+#   (c) Track B 에서는 sentiment 추론 대신 gpu-smoke-pod.yaml 의 nvidia-smi 검증으로 대체
+# 본 코스 흐름은 (c) 를 권장 — 실제 sentiment 의 GPU 추론은 Phase 4/02 KServe / 03 vLLM 에서.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api-gpu
+  labels:
+    app: sentiment-api
+    phase: "4"
+    topic: "01-gpu-on-k8s"
+    accelerator: gpu
+spec:
+  replicas: 1                              # GPU 는 비싸므로 학습 토픽에서는 1개로 시작
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: sentiment-api
+      accelerator: gpu                      # CPU 버전 sentiment-api 와 selector 충돌 방지
+  template:
+    metadata:
+      labels:
+        app: sentiment-api
+        accelerator: gpu
+    spec:
+      containers:
+        - name: app
+          image: sentiment-api:v1           # Phase 0–2 와 동일 이미지. ⚠ Track B 는 위 주석 (a)/(b)/(c) 참고
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: APP_VERSION
+              value: "v1-gpu"               # /ready 응답에 표시되어 어떤 Pod 인지 식별
+            - name: MODEL_NAME
+              value: "cardiffnlp/twitter-roberta-base-sentiment"
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"                    # 컨테이너 안에서 GPU 인덱스 0 만 보이게 — Pod 가 받은 GPU 가 항상 0번으로 보임
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"                 # GPU 추론은 모델이 GPU 메모리에 올라가도 호스트 메모리도 일부 사용
+              # ── GPU 자원 요청 ──
+              # extended resource 는 기본적으로 limits 만 지정하면 K8s 가 requests 를 자동 복사하지만,
+              # 의도를 분명히 하기 위해 양쪽 다 명시. 정수만 허용 (0.5 같은 fractional 불가).
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+              nvidia.com/gpu: 1             # ⚠ requests 와 같은 값이어야 함. 다르면 admission 거절
+          # ── Probe (Phase 1/04 와 동일) ──
+          # GPU 추론도 모델 로딩 시간 (HF 캐시 미스 시 30~90초) 은 CPU 와 동일.
+          # 차이는 추론 latency (10~30ms 수준) — probe 자체는 CPU/GPU 무관.
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 24            # 5×24 = 120초 모델 로딩 허용
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 2
+      # ── GPU 노드 격리 3총사 ──
+      nodeSelector:
+        # GKE 에서는 GPU 노드 풀이 자동으로 이 라벨을 부여 (gcloud container node-pools create --accelerator=type=nvidia-tesla-t4)
+        # 다른 클러스터: EKS 는 `nvidia.com/gpu.product`, AKS 는 `accelerator`, on-prem 은 자체 라벨링 필요
+        cloud.google.com/gke-accelerator: nvidia-tesla-t4
+      tolerations:
+        # GKE GPU 노드는 자동으로 `nvidia.com/gpu=present:NoSchedule` taint 가 걸림 — 일반 워크로드는 GPU 노드에 못 들어감.
+        # toleration 누락 → Pending 영구 (자주 하는 실수 2번). 본 매니페스트는 정상 패턴.
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 30

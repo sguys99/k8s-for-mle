@@ -1,0 +1,56 @@
+# gpu-time-slicing-config.yaml — NVIDIA Device Plugin Time-slicing 설정 ConfigMap
+#
+# 본 파일은 *개념 시연용 정적 dump* 입니다. Track B 의 *옵션 단계* 에서만 실제로 적용하며,
+# Track A (minikube, GPU 없음) 에서는 적용하지 않고 *읽기 자료* 로만 사용합니다.
+#
+# Time-slicing 이란?
+#   한 GPU 카드를 *시분할* 로 여러 Pod 에 나누어 보이게 하는 기능. 예) replicas: 4 로 두면
+#   `nvidia.com/gpu` 자원이 노드 capacity 에 4 개로 등록되어 4 개 Pod 가 같은 GPU 를 *번갈아* 사용.
+#   격리는 약합니다 (CUDA context 가 시분할로 swap) — 한 Pod 가 GPU 메모리를 다 쓰면 다른 Pod 도 같이 OOM.
+#   적합한 용도: *작은 추론 모델 다중 실행*, *개발용 다인 공유 클러스터*. 학습 / LLM 에는 부적합.
+#
+# MIG (Multi-Instance GPU) 와의 차이:
+#   MIG 는 *하드웨어* 슬라이스 (A100 / H100 / L40S 만 지원) 로 메모리·연산 단위가 격리됨.
+#   Time-slicing 은 *소프트웨어* 시분할 — 어떤 GPU 든 가능 (T4 포함) 하지만 격리 약.
+#
+# 적용 방법 (Track B 옵션 단계):
+#   1) 본 ConfigMap 을 `nvidia-device-plugin` namespace 에 apply
+#      (GKE 의 nvidia-device-plugin DaemonSet 이 이 namespace 에 살아있다고 가정 — 다른 환경은 helm chart 기준)
+#   2) Device Plugin DaemonSet 의 args / env 를 본 ConfigMap 을 참조하도록 갱신 (helm values 또는 patch)
+#   3) DaemonSet rollout → 노드 capacity 의 nvidia.com/gpu 가 1 → 4 로 변화
+#   4) `kubectl describe node | grep -A2 'nvidia.com/gpu'` 로 capacity: 4 확인
+#
+# ⚠ 본 ConfigMap 을 apply 하는 것만으로는 효과가 없습니다 — Device Plugin 이 이 ConfigMap 을
+#   *참조하도록* args 가 설정되어 있어야 합니다 (helm chart 의 `config.name=time-slicing-config`).
+#   본 코스 범위 밖이지만, 학습자가 GKE GPU 노드에서 "1 GPU 에 2 Pod 동시 실행" 을 해보고 싶다면
+#   GKE 콘솔의 `--gpu-driver-version=DEFAULT --gpu-sharing-strategy=time-sharing` 옵션이 더 간단합니다.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: time-slicing-config
+  namespace: nvidia-device-plugin           # GKE 표준. 환경에 따라 `gpu-operator` / `kube-system` 등으로 변경
+  labels:
+    phase: "4"
+    topic: "01-gpu-on-k8s"
+    purpose: time-slicing-demo
+data:
+  # NVIDIA k8s-device-plugin 의 표준 설정 형식 (v0.14+).
+  # 공식 문서: https://github.com/NVIDIA/k8s-device-plugin#shared-access-to-gpus-with-cuda-time-slicing
+  any: |
+    version: v1
+    sharing:
+      timeSlicing:
+        # ── replicas ──
+        # 한 GPU 를 몇 개의 *논리적 nvidia.com/gpu* 로 노출할지.
+        # 본 예시는 4 — 노드의 GPU 1장이 마치 4장처럼 capacity 에 등록되어,
+        # `nvidia.com/gpu: 1` 을 요청하는 Pod 4개가 같은 카드 위에서 시분할 동작.
+        # ⚠ replicas 가 클수록 GPU 메모리 압박 심함 — 추론 모델 크기 × replicas 가
+        #   GPU 메모리를 넘으면 OOM 으로 모든 Pod 가 동시에 죽습니다 (자주 하는 실수 3번).
+        resources:
+          - name: nvidia.com/gpu
+            replicas: 4
+        # ── failRequestsGreaterThanOne ──
+        # true 면 `nvidia.com/gpu: 2` 같은 다중 카드 요청을 거절. 시분할 환경에서는 카드 1장씩만
+        # 쓰는 것이 의미 있으므로 보통 true. 본 예시도 같은 입장.
+        # (단, 위 설정 키는 v1 schema 의 sharing.timeSlicing.failRequestsGreaterThanOne 위치 — 본 코스 범위 밖)

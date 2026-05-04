@@ -1,0 +1,51 @@
+# gpu-smoke-pod.yaml — GPU 노드에서 nvidia-smi 가 동작하는지 확인하는 단일 Pod
+#
+# 본 매니페스트는 Track B (GKE 또는 로컬 GPU 클러스터) 1단계 검증용입니다.
+# Device Plugin 이 GPU 를 자원으로 정상 노출하고 있는지를, sentiment-api 같은
+# 운영 모델을 띄우기 *전* 에 5초 안에 확인하는 게 목적입니다.
+#
+# 실행 흐름:
+#   1) `nvidia-smi` 로 GPU 카드 정보 출력 → stdout 에 표 형태로 보임
+#   2) 컨테이너가 정상 종료 (exit 0) → Pod 가 Completed 상태로 남음
+#   3) `kubectl logs gpu-smoke` 로 nvidia-smi 출력을 다시 확인 가능
+#
+# Track A (minikube, GPU 없는 환경) 에서는 이 매니페스트를 *적용하지 않습니다*.
+# 적용하면 `0/1 nodes are available: 1 Insufficient nvidia.com/gpu` 메시지로
+# 영구 Pending 됩니다. Track A 의 Pending 시연은 sentiment-gpu-mistake.yaml 가 담당.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-smoke
+  labels:
+    app: gpu-smoke
+    phase: "4"
+    topic: "01-gpu-on-k8s"
+    purpose: smoke-test       # Track B 1단계 검증 마커. 검증 후 즉시 삭제 권장.
+spec:
+  restartPolicy: Never        # nvidia-smi 한 번 실행 후 종료가 정상 — 재시작하지 않음
+  containers:
+    - name: cuda-test
+      # nvidia/cuda 공식 이미지 — base 태그는 nvidia-smi + CUDA runtime 만 포함 (~150MB).
+      # ubuntu22.04 변종은 GKE / EKS / AKS 의 host 드라이버와 호환성이 가장 안정적.
+      image: nvidia/cuda:12.2.0-base-ubuntu22.04
+      command: ["nvidia-smi"]
+      resources:
+        # ⚠ GPU requests / limits 의 핵심 규칙:
+        #   - 정수만 가능 (0.5 같은 fractional 불가 — Time-slicing 활성 노드라도 Pod 입장에서는 정수 1개 단위)
+        #   - limits 만 지정해도 K8s 가 동일 값을 requests 에 자동 복사 (extended resource 의 특수 동작)
+        #   - 그래도 명시적으로 양쪽 다 적는 것이 의도가 분명해 운영 모범 사례.
+        limits:
+          nvidia.com/gpu: 1   # 카드 1장 요청. Device Plugin 이 노드 capacity 에 등록한 값에서 1 을 차감.
+        requests:
+          nvidia.com/gpu: 1
+  # ── GPU 노드 격리 3총사 ──
+  # nodeSelector  : "어디로 갈지" — GKE / EKS / AKS 의 가속기 라벨로 GPU 노드를 양수 매칭
+  # tolerations   : "GPU 노드의 거부 (taint) 에도 들어갈 패스" — taint 가 걸려있지 않은 환경에서는 무시됨
+  # affinity (옵션): 더 복잡한 매칭 (예: A100 만, T4 제외) 이 필요할 때 nodeAffinity 로 표현. 본 토픽 범위 밖.
+  nodeSelector:
+    cloud.google.com/gke-accelerator: nvidia-tesla-t4   # GKE 자동 라벨. 다른 클러스터에선 환경에 맞게 변경
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists           # taint 의 value 와 effect 무관하게 모두 허용 — GKE 의 표준 GPU taint 패턴
+      effect: NoSchedule

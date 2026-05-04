@@ -114,10 +114,10 @@
 > ⚠️ **GPU 필요 토픽**: 4-1, 4-3, 캡스톤. 로컬 GPU 없으면 GCP GKE 임시 클러스터 사용. **실습 후 클러스터 삭제 필수.**
 
 - [ ] **01-gpu-on-k8s** — NVIDIA Device Plugin, `nvidia.com/gpu`, taint+toleration, MIG/Time-slicing
-  - [ ] lesson.md
-  - [ ] 매니페스트/코드
-  - [ ] labs/
-  - [ ] GPU 클러스터 검증 (로컬 GPU 또는 GKE)
+  - [x] lesson.md
+  - [x] 매니페스트/코드
+  - [x] labs/
+  - [ ] GPU 클러스터 검증 (로컬 GPU 또는 GKE) _(학습자가 labs Track B Step 0–9 실행 후 갱신)_
 - [ ] **02-kserve-inference** — Phase 0~3 분류 모델을 KServe `InferenceService`로 마이그레이션
   - [ ] lesson.md
   - [ ] 매니페스트/코드

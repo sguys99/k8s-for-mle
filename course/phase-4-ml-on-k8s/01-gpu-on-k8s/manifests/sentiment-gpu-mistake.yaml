@@ -1,0 +1,70 @@
+# sentiment-gpu-mistake.yaml — 의도적으로 ‘틀린’ GPU 매니페스트
+#
+# 본 파일은 Track A (minikube) 와 Track B (GKE) 양쪽 모두에서 *Pending 시연용* 으로 사용됩니다.
+# sentiment-gpu-deployment.yaml 의 정상 매니페스트와 비교했을 때 다음 *3 군데* 가 의도적으로 잘못되어
+# 있고, 각각이 자주 하는 실수의 패턴 1–2 개씩을 시연합니다.
+#
+# ─ 시연하는 함정 ─
+#   ① limits 만 nvidia.com/gpu: 1, requests 에는 *다른 컴퓨트 자원만* 명시
+#       → extended resource 자동 복사 규칙으로 admission 자체는 통과하지만,
+#         "limits 만 적으면 의도가 모호하다" 는 운영 관점의 안티패턴 (lesson 1-2).
+#   ② nodeSelector 가 *없음*
+#       → GPU 노드를 양수 매칭하지 않으므로, Track B 에서도 GPU 노드 풀이 아닌 일반 노드로 갈 수 있고
+#         그 결과 nvidia.com/gpu 자원이 없는 노드에 schedule 시도되어 거절됩니다.
+#   ③ tolerations 가 *없음*
+#       → GKE 의 GPU 노드는 `nvidia.com/gpu=present:NoSchedule` taint 가 자동으로 걸려있어,
+#         toleration 없이는 *영구 Pending*. `kubectl describe pod` events 에
+#         `node(s) had untolerated taint` 또는 `Insufficient nvidia.com/gpu` 가 보입니다 (자주 하는 실수 2번).
+#
+# ─ 워크플로 ─
+#   apply → Pending 관찰 → describe 로 events 메시지 확인 → 즉시 delete → 정상 매니페스트 (sentiment-gpu-deployment.yaml) 와 비교.
+#
+# Track A (minikube): 메시지가 `Insufficient nvidia.com/gpu` 형태 (노드에 GPU capacity 자체가 없어서).
+# Track B (GKE): 메시지가 `node(s) had untolerated taint {nvidia.com/gpu: present}` 형태.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-api-gpu-mistake
+  labels:
+    app: sentiment-api-mistake
+    phase: "4"
+    topic: "01-gpu-on-k8s"
+    purpose: anti-pattern-demo                # 학습용 — 검증 후 즉시 delete
+    phase-4-01: mistake-must-be-deleted        # 일괄 삭제용 라벨 (정리 단계에서 사용)
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentiment-api-mistake
+  template:
+    metadata:
+      labels:
+        app: sentiment-api-mistake
+    spec:
+      containers:
+        - name: app
+          image: sentiment-api:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MODEL_NAME
+              value: "cardiffnlp/twitter-roberta-base-sentiment"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+              # ⚠ 함정 ① — requests 에 nvidia.com/gpu 가 *없습니다*
+              # extended resource 의 자동 복사 규칙으로 admission 은 통과하지만, 운영 관점에선 의도 불명확.
+              # 일부 admission 정책 (Gatekeeper 등) 은 이 패턴을 거절하기도 합니다.
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+              nvidia.com/gpu: 1                  # limits 에만 명시 — 자동 복사로 requests 에도 1 이 들어감
+      # ⚠ 함정 ② — nodeSelector 가 *완전히 누락*
+      #   GKE 의 GPU 노드 풀은 `cloud.google.com/gke-accelerator` 라벨로 식별되는데,
+      #   이 라벨로 매칭하지 않으면 스케줄러가 GPU 노드를 양수로 선택할 이유가 없습니다.
+      # ⚠ 함정 ③ — tolerations 가 *완전히 누락*
+      #   GKE 의 GPU 노드 taint `nvidia.com/gpu=present:NoSchedule` 를 허용하는 toleration 이 없어,
+      #   schedule 시도 자체가 거절됩니다. Track B 에서 가장 흔한 GPU Pending 의 원인.
