@@ -28,7 +28,7 @@ Phase 2/05 까지 dev / prod 두 namespace 에 거의 같은 5개 자원(ConfigM
 | 챕터 | 제목 | 핵심 내용 |
 |------|------|----------|
 | [01](./01-helm-chart/) | Helm Chart | Phase 2/05 의 dev/prod 매니페스트 두 벌을 단일 차트로 패키징, `values-dev.yaml` / `values-prod.yaml` 환경 분리, 4가지 라이프사이클 명령(install/upgrade/rollback/uninstall), `helm template` / `--dry-run` / `helm history` 디버깅 |
-| 02 | Prometheus + Grafana | (작성 예정) kube-prometheus-stack 설치, FastAPI `/metrics`, ServiceMonitor, Grafana 대시보드 |
+| [02](./02-prometheus-grafana/) | Prometheus + Grafana | kube-prometheus-stack 설치, 01 차트에 `templates/servicemonitor.yaml` 추가로 FastAPI `/metrics` 자동 스크래핑, PromQL 핵심 5개로 throughput / p95 latency / error rate 계산, Grafana 4 패널 대시보드 import |
 | 03 | Autoscaling (HPA) | (작성 예정) HPA + 부하 테스트(`hey`/`wrk`), VPA·Cluster Autoscaler 개념 |
 | 04 | RBAC & ServiceAccount | (작성 예정) ServiceAccount / Role / RoleBinding, 최소 권한, kubeconfig 분리 |
 

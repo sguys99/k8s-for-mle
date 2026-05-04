@@ -1,0 +1,52 @@
+# templates/servicemonitor.yaml — Phase 3/02 (Prometheus) 에서 활성화되는 자원.
+#
+# 본 토픽 (Phase 3/01) 에서는 values.yaml 의 monitoring.serviceMonitor.enabled 가 false 라
+# 이 파일은 빈 문자열을 렌더하고 → kubectl 에 전달되지 않습니다 (= 사실상 비활성).
+#
+# Phase 3/02 의 lab 4 단계에서 다음 명령으로 활성화됩니다:
+#   helm upgrade sentiment-api ... --set monitoring.serviceMonitor.enabled=true
+#
+# 동작 원리:
+# 1) kube-prometheus-stack 이 설치한 Prometheus Operator 가 클러스터의 ServiceMonitor 자원을 watch.
+# 2) Operator 가 spec.selector.matchLabels 와 일치하는 Service 를 찾고,
+#    그 Service 가 가리키는 모든 Pod 의 endpoints[].port 에 대해 스크래핑 잡을 자동 생성.
+# 3) Prometheus 가 그 잡으로 30초마다 /metrics 를 스크래핑.
+#
+# 라벨 매칭은 두 단계로 일어난다는 점이 핵심:
+#   ・ Operator → ServiceMonitor 발견:  ServiceMonitor 의 metadata.labels (release: prom) 가
+#                                        kube-prometheus-stack 의 serviceMonitorSelector 와 일치해야 함.
+#   ・ ServiceMonitor → Service 매칭:  spec.selector.matchLabels 가 Service 의 metadata.labels 와 일치해야 함.
+
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "sentiment-api.fullname" . }}
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+    {{- /*
+        kube-prometheus-stack 기본 셀렉터는 release: <설치이름> 라벨로 ServiceMonitor 를 찾습니다.
+        본 차트에서는 values.yaml 의 monitoring.serviceMonitor.labels 가 그 라벨을 주입.
+        Phase 3/02 lab 1 단계의 helm install 이 release 이름을 "prom" 으로 쓰므로 기본값이 그대로 매칭.
+    */}}
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # spec.selector — 어떤 Service 를 스크래핑할지.
+  # selectorLabels (helpers) 에는 app.kubernetes.io/name, app.kubernetes.io/instance, app 세 개가 들어갑니다.
+  # 본 차트의 templates/service.yaml 에 동일 라벨이 박혀 있어 정확히 매칭됩니다.
+  selector:
+    matchLabels:
+      {{- include "sentiment-api.selectorLabels" . | nindent 6 }}
+  # endpoints — Service 의 ports 중 어떤 포트를 스크래핑할지.
+  # Service 의 named port "http" 를 그대로 사용. 숫자 8000 대신 이름으로 가리키는 이유는,
+  # 컨테이너 포트나 Service 포트가 바뀌어도 ServiceMonitor 를 수정하지 않아도 되기 때문.
+  endpoints:
+    - port: http
+      path: {{ .Values.monitoring.serviceMonitor.path | default "/metrics" }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval | default "30s" }}
+      # scrapeTimeout 은 interval 보다 작아야 함 (Operator validation). 명시 안 하면 Prom 기본 10s.
+      scrapeTimeout: 10s
+      # honorLabels: false (기본) — Pod 의 라벨이 Prometheus 의 표준 라벨(job, instance) 을 덮어쓰지 못하게.
+{{- end }}

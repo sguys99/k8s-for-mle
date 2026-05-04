@@ -263,6 +263,6 @@ kubectl delete pvc -n dev -l app=sentiment-api 2>/dev/null || true
 
 ## 다음 챕터
 
-➡️ [Phase 3 / 02-prometheus-grafana — kube-prometheus-stack 설치와 ServiceMonitor](../02-prometheus-grafana/lesson.md) (작성 예정)
+➡️ [Phase 3 / 02-prometheus-grafana — kube-prometheus-stack 설치와 ServiceMonitor](../02-prometheus-grafana/lesson.md)
 
 본 토픽이 만든 `manifests/chart/sentiment-api/` 차트는 다음 토픽에서 두 가지로 evolve 됩니다. ① **`templates/servicemonitor.yaml` 추가** — 본 토픽 [values.yaml](manifests/chart/sentiment-api/values.yaml) 의 `monitoring.serviceMonitor.enabled: false` placeholder 가 활성화되어, prod release 의 Pod 메트릭을 Prometheus 가 자동 스크래핑하게 됩니다. ② **kube-prometheus-stack 차트 install** — 본 토픽의 helm 명령을 그대로 사용해 `helm install prom prometheus-community/kube-prometheus-stack -n monitoring --create-namespace` 한 줄로 Prometheus / Grafana / Alertmanager 가 들어옵니다. Phase 3 의 나머지 토픽들 (`03-autoscaling-hpa`, `04-rbac-serviceaccount`) 도 모두 본 차트에 templates 를 추가하는 형태로 진화합니다. Helm 으로 들어오면 모든 길이 열립니다.

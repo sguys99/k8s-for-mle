@@ -1,0 +1,126 @@
+# kube-prometheus-stack values.yaml — Phase 3/02 minikube 학습 프로필.
+#
+# 사용법:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install prom prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace \
+#     -f course/phase-3-production/02-prometheus-grafana/manifests/kube-prometheus-stack/values.yaml
+#
+# 이 파일이 운영 차트가 아닌 "학습용" 인 이유:
+#   ・ retention 2일 (디폴트 10일) — minikube 의 hostPath 디스크가 작음
+#   ・ Alertmanager 비활성 — 알림 규칙은 Phase 3/03 (HPA) 이후 다룰 주제
+#   ・ 디폴트 룰 일부 비활성 — minikube 환경에 의미 없는 etcd / kubeScheduler 룰 등이 항상 firing
+#   ・ Grafana persistence 비활성 — 대시보드는 lab 7 단계에서 매번 import (재현성 학습)
+#
+# 운영 차트로 만들 때 바꿀 라인은 모두 본 파일 끝의 "운영 시 검토 항목" 섹션에 정리.
+
+# ─ Prometheus 본체 ────────────────────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    # retention — 메트릭 보관 기간. 학습 환경은 2일이면 충분 (디폴트 10일은 minikube 에 부담).
+    retention: 2d
+
+    # serviceMonitorSelectorNilUsesHelmValues — Operator 가 ServiceMonitor 를 발견하는 규칙.
+    # true (디폴트):  release: prom 라벨이 붙은 ServiceMonitor 만 픽업
+    # false:          모든 namespace 의 모든 ServiceMonitor 픽업 (학습 시 누락 디버깅 부담 ↓)
+    # 본 토픽은 true 를 그대로 두고, sentiment-api 의 ServiceMonitor 가 release: prom 라벨을 갖도록
+    # values.yaml 의 monitoring.serviceMonitor.labels.release: prom 으로 설계 — 이 둘이 매칭됨.
+    serviceMonitorSelectorNilUsesHelmValues: true
+
+    # PodMonitor / Probe / RuleSelector 도 동일 정책. 본 토픽은 ServiceMonitor 만 다루므로 그대로.
+    podMonitorSelectorNilUsesHelmValues: true
+    ruleSelectorNilUsesHelmValues: true
+
+    # storageSpec — Prometheus TSDB 영속화. 비우면 emptyDir → Pod 재시작 시 메트릭 소실.
+    # 학습 환경에선 emptyDir 로 충분 (Pod 재시작이 흔하지 않음). 운영은 PVC 권장.
+    # storageSpec:
+    #   volumeClaimTemplate:
+    #     spec:
+    #       storageClassName: standard
+    #       resources: { requests: { storage: 10Gi } }
+
+    # 리소스 — minikube CPU 4코어 / RAM 4GiB 가정. 너무 작으면 OOM, 너무 크면 노드가 부족.
+    resources:
+      requests:
+        cpu: 200m
+        memory: 600Mi
+      limits:
+        cpu: "1"
+        memory: 1500Mi
+
+# ─ Alertmanager (학습 단계 비활성) ────────────────────────────────────────
+alertmanager:
+  enabled: false                                  # Phase 3 학습에선 알림 규칙 다루지 않음. 운영은 enable 후 receiver 설정.
+
+# ─ Grafana ────────────────────────────────────────────────────────────────
+grafana:
+  enabled: true
+  adminPassword: prom-operator                    # ⚠️ 학습 편의. 운영은 Secret 으로 주입 (자주 하는 실수 3번 참고).
+
+  # Grafana persistence — 비활성으로 두면 Pod 재시작 시 import 한 대시보드가 사라집니다.
+  # 본 토픽은 lab 7 단계의 "import" 가 학습 포인트라 일부러 비활성. 운영은 enable.
+  persistence:
+    enabled: false
+
+  # 자동 데이터소스 설정 — Operator 가 Prometheus URL 을 자동으로 Grafana 에 등록.
+  # 결과: 학습자는 Grafana UI 진입 후 Datasource 설정을 따로 안 해도 됨.
+  sidecar:
+    dashboards:
+      enabled: true                               # ConfigMap 기반 자동 provisioning 도 가능 (본 토픽은 import UI 사용).
+      label: grafana_dashboard
+      labelValue: "1"
+    datasources:
+      enabled: true
+
+  # Service 타입 — minikube 에서 port-forward 로 접근 (NodePort/LoadBalancer 불필요)
+  service:
+    type: ClusterIP
+    port: 80
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 200Mi
+    limits:
+      cpu: 500m
+      memory: 600Mi
+
+# ─ Default Rules — 일부 비활성화 (minikube 노이즈 줄이기) ─────────────────
+# defaultRules.create: true 면 Prom 이 etcd / kubeScheduler / kubeControllerManager 등에 대해
+# 알림 룰을 자동 생성합니다. minikube 는 이 컴포넌트들이 호스트 프로세스라 메트릭이 안 잡혀
+# 룰이 항상 firing (KubeSchedulerDown, KubeControllerManagerDown 등) → 학습 노이즈.
+defaultRules:
+  create: true
+  rules:
+    etcd: false
+    kubeScheduler: false
+    kubeControllerManager: false
+    kubeProxy: false
+
+# ─ kube-state-metrics & node-exporter (그대로 활성) ───────────────────────
+# kube-state-metrics: kube_deployment_status_replicas_available 같은 K8s 자원 상태 메트릭 노출
+# node-exporter: 노드 CPU / 메모리 / 디스크 메트릭 — minikube 단일 노드라도 기본 동작
+kube-state-metrics:
+  resources:
+    requests: { cpu: 50m, memory: 100Mi }
+    limits:   { cpu: 200m, memory: 300Mi }
+prometheus-node-exporter:
+  resources:
+    requests: { cpu: 50m, memory: 50Mi }
+    limits:   { cpu: 200m, memory: 200Mi }
+
+# ─ kubelet / kube-apiserver / coreDNS — 그대로 (이건 minikube 도 노출) ───
+# 따로 disable 하지 않습니다. 디폴트 룰이 의미 있는 컴포넌트들.
+
+# ────────────────────────────────────────────────────────────────────────
+# 운영 시 검토 항목 (본 파일을 운영 클러스터로 옮길 때 반드시 다시 보세요)
+# ────────────────────────────────────────────────────────────────────────
+# 1) prometheus.prometheusSpec.retention                       → 15d ~ 30d
+# 2) prometheus.prometheusSpec.storageSpec                     → PVC (StatefulSet 으로 자동 전환)
+# 3) prometheus.prometheusSpec.resources                       → CPU 1+ / RAM 4Gi+ (메트릭 양에 비례)
+# 4) alertmanager.enabled                                      → true (그리고 receiver 설정)
+# 5) grafana.adminPassword                                     → existingSecret 으로 주입
+# 6) grafana.persistence.enabled                               → true + storageClass 지정
+# 7) grafana.ingress.enabled                                   → true (또는 oauth2-proxy 사인인 게이트웨이)
+# 8) defaultRules.create                                       → true + 환경에 맞게 일부만 disable

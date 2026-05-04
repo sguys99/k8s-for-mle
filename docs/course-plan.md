@@ -92,10 +92,10 @@
   - [x] labs/
   - [ ] minikube 검증 _(학습자가 labs 0–8단계 실행 후 갱신)_
 - [ ] **02-prometheus-grafana** — kube-prometheus-stack, FastAPI `/metrics`, ServiceMonitor, Grafana 대시보드
-  - [ ] lesson.md
-  - [ ] 매니페스트/코드
-  - [ ] labs/
-  - [ ] minikube 검증
+  - [x] lesson.md
+  - [x] 매니페스트/코드
+  - [x] labs/
+  - [ ] minikube 검증 _(학습자가 labs 0–9단계 실행 후 갱신)_
 - [ ] **03-autoscaling-hpa** — HPA + 부하 테스트(`hey`/`wrk`), VPA·Cluster Autoscaler 개념
   - [ ] lesson.md
   - [ ] 매니페스트/코드
