@@ -34,3 +34,21 @@ resources:
 persistence:
   enabled: true
   size: 2Gi                                    # prod 는 모델 가중치 + 추가 메타파일 여유
+
+# ─ Autoscaling (Phase 3/03 에서 활성화) ─────────────────────────────────────
+# resources.requests.cpu: 500m 가 위에 명시되어 있으므로 HPA 의 백분율 계산이 정상 동작합니다.
+# ML 추론 워크로드 특성상 scaleUp 은 즉시, scaleDown 은 보수적으로 설정 (cold start 비용 30s+).
+autoscaling:
+  enabled: true                                # Phase 3/03 lab 2 단계에서 helm upgrade --set 으로 켜는 것이 표준이지만, prod 의 의도된 상태는 true
+  minReplicas: 2                               # 가용성 — 1 Pod 만으로 운영하지 않음
+  maxReplicas: 8                               # 비용 상한 — minikube 학습 환경에선 4–5 정도가 실제 한계
+  targetCPUUtilizationPercentage: 70           # requests 500m 의 70% = 350m 도달 시 스케일 아웃
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300          # 부하 종료 후 5분 동안 desired 의 max 유지 → flapping 방지
+    scaleUp:
+      stabilizationWindowSeconds: 0            # spike 시 즉시 반응
+      policies:
+        - type: Percent
+          value: 100                           # 한 번의 평가 윈도우에 최대 100% 증가 (2 → 4 → 8)
+          periodSeconds: 60

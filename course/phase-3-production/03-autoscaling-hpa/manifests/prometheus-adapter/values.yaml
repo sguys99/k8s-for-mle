@@ -1,0 +1,66 @@
+# prometheus-adapter Helm values — Phase 3/03 lab 6 단계.
+#
+# 역할: Prometheus 에 스크래핑된 시계열을 K8s 의 custom.metrics.k8s.io API 로 노출.
+#       그러면 HPA 가 spec.metrics.type: Pods / Object 로 그 메트릭을 직접 소비할 수 있습니다.
+#
+# 설치:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm install prom-adapter prometheus-community/prometheus-adapter \
+#       -n monitoring \
+#       -f values.yaml
+#
+# ⚠️ Prometheus 서비스 이름은 Phase 3/02 의 release 이름에 따라 결정됩니다.
+#    Phase 3/02 lab 1 의 install 명령이 release 이름을 "prom" 으로 사용했으므로
+#    아래의 prom-kube-prometheus-stack-prometheus 가 정확히 매칭합니다.
+#    다른 이름으로 설치했다면 `kubectl get svc -n monitoring | grep prometheus` 로 확인 후 수정.
+
+prometheus:
+  url: http://prom-kube-prometheus-stack-prometheus.monitoring.svc
+  port: 9090
+  path: ""
+
+# minikube 부담을 낮추기 위한 리소스 — adapter 자체는 가벼운 stateless 변환기.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
+replicas: 1
+
+# 디폴트 룰 (kubelet, node, container 메트릭 변환) 은 본 토픽에서 사용하지 않으므로 비활성.
+# 운영에선 디폴트 룰을 켜둔 채 custom 룰만 추가하는 것이 일반적입니다.
+rules:
+  default: false
+
+  # custom — Prometheus 시리즈를 K8s 자원에 매핑하는 핵심 규칙.
+  custom:
+    # 규칙 1: predict_requests_total (Counter) → predict_requests_per_second (Pods 메트릭)
+    #
+    # 흐름 ① seriesQuery: adapter 가 Prometheus 에 어떤 시계열을 조회할지.
+    #         라벨 셀렉터 (namespace!="", pod!="") 로 K8s 자원 라벨을 가진 시리즈만 후보화.
+    #
+    # 흐름 ② resources.overrides: Prometheus 라벨을 K8s 자원으로 매핑.
+    #         kube-prometheus-stack 의 ServiceMonitor 가 만드는 라벨이 namespace / pod 이므로
+    #         그대로 매핑. (라벨 이름이 다르면 자주 하는 실수 2번 시나리오)
+    #
+    # 흐름 ③ name.matches / as: API 에 노출될 메트릭 이름 변환.
+    #         "_total" 로 끝나는 Counter 를 "_per_second" 로 바꿔 의미를 명확히.
+    #
+    # 흐름 ④ metricsQuery: adapter 가 실제로 Prometheus 에 던지는 PromQL.
+    #         <<.Series>>, <<.LabelMatchers>>, <<.GroupBy>> 는 adapter 가 런타임에 치환.
+    #         rate window 는 ServiceMonitor interval (30s) 의 4배 이상인 2m 로 안전하게.
+    - seriesQuery: 'predict_requests_total{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace:
+            resource: namespace
+          pod:
+            resource: pod
+      name:
+        matches: "^(.*)_total$"
+        as: "${1}_per_second"
+      metricsQuery: |
+        sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)

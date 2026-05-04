@@ -1,0 +1,50 @@
+# hpa-custom-metric.yaml — Phase 3/03 lab 8 단계.
+#
+# 두 번째 HPA. 같은 sentiment-api Deployment 를 RPS 기준으로 스케일.
+# 01 차트의 templates/hpa.yaml 이 만든 CPU 기반 HPA 와 *공존* 하며, 컨트롤러는 두 HPA 의 desired 중 더 큰 값을 채택.
+#
+# 본 매니페스트가 차트 안이 아닌 standalone 으로 분리된 이유:
+#   ① prometheus-adapter (다른 release 라이프사이클) 와 결합 — 차트 사용자가 adapter 없이 차트만 install 할 수도 있어야 함.
+#   ② Pods 메트릭은 ServiceMonitor + adapter 의 라벨 매핑에 종속이라 트러블슈팅이 잦음 — 차트와 분리하면 디버깅이 단순.
+#
+# 적용 전제:
+#   ・ Phase 3/02 의 ServiceMonitor 가 active 이고 Prometheus 가 predict_requests_total 을 스크래핑 중.
+#   ・ prometheus-adapter 가 monitoring namespace 에 install 되어 custom.metrics.k8s.io API 가 Available.
+#   ・ values-prod.yaml 의 resources.requests 가 명시되어 있어 minReplicas 만큼 Pod 가 안정 기동.
+#
+# 검증: kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/prod/pods/*/predict_requests_per_second"
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sentiment-api-rps                         # 01 차트의 sentiment-api HPA 와 이름 충돌 방지 — 한 Deployment 에 두 HPA
+  namespace: prod
+  labels:
+    app: sentiment-api
+    autoscaler: rps                               # 두 HPA 를 같이 조회할 때 식별 (kubectl get hpa -l autoscaler 등)
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sentiment-api                            # 01 차트의 Deployment 이름과 정확히 일치
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: predict_requests_per_second        # adapter 의 name.as 가 만든 이름
+        target:
+          type: AverageValue                       # Pods 메트릭은 averageValue 만 가능 (Pod 당 평균)
+          averageValue: "10"                       # Pod 당 평균 10 req/s 도달 시 scale-out
+  # behavior — 01 차트 hpa.yaml 의 behavior 와 동일한 비대칭 정책.
+  # 두 HPA 가 같은 Deployment 를 제어할 때 stabilization 정책이 다르면 진단이 어려워지므로 동일하게 맞춤.
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60

@@ -107,6 +107,11 @@ autoscaling:
   minReplicas: 1
   maxReplicas: 5
   targetCPUUtilizationPercentage: 70
+  # ⚠️ HPA 의 백분율은 컨테이너의 resources.requests.cpu 기준 — 위쪽 resources: {} 디폴트에서는
+  #    metrics-server 가 사용량은 보고하지만 분모가 없어 HPA 가 desired 를 계산할 수 없습니다.
+  #    values-prod.yaml 처럼 requests 를 명시한 환경, 또는 LimitRange default 로 채워지는 환경에서만 동작합니다.
+  #    (Phase 3/03 lesson.md 자주 하는 실수 1번 참고)
+  behavior: {}                                 # autoscaling/v2 의 scaleUp/scaleDown 정책. 비우면 K8s 기본 (scaleDown 5분 stabilization, scaleUp 즉시).
 
 ingress:
   enabled: false                               # Phase 2/03 패턴 — 본 차트에서는 비활성

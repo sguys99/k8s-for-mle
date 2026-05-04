@@ -1,0 +1,54 @@
+# hey-job.yaml — Phase 3/03 lab 3, 9 단계.
+#
+# Job 으로 부하를 부여 — 학습자 PC 에 hey 가 설치되지 않아도 클러스터 안에서 실행 가능합니다.
+# rakyll/hey 는 Go 단일 바이너리 이미지이고 ENTRYPOINT 가 /hey 라 args 로 옵션 전달 가능.
+#
+# 옵션 의미:
+#   -z 60s        총 60초 동안 부하
+#   -c 50         동시 접속 50개
+#   -m POST       HTTP 메서드
+#   -T application/json   Content-Type
+#   -d '{"text":...}'     POST 본문
+#
+# 기대: 60초 부하 동안 sentiment-api 의 평균 CPU 가 70% 를 초과 → resource HPA 가 replicas 2 → 4 이상으로 증가.
+# 부하 종료 후 5분 (behavior.scaleDown.stabilizationWindowSeconds) 동안 replicas 가 유지되다 점진 감소.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hey-load                                # 재실행 시 kubectl delete job hey-load -n prod 후 재 apply
+  namespace: prod
+  labels:
+    purpose: load-test
+spec:
+  backoffLimit: 0                               # 학습용 — 실패 시 재시도 안 함 (Job spec 문제를 빨리 발견)
+  ttlSecondsAfterFinished: 600                  # 완료 후 10분 뒤 자동 정리 (kubectl 결과 확인 시간 확보)
+  template:
+    metadata:
+      labels:
+        purpose: load-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: hey
+          image: rakyll/hey:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-z"
+            - "60s"
+            - "-c"
+            - "50"
+            - "-m"
+            - "POST"
+            - "-T"
+            - "application/json"
+            - "-d"
+            - '{"text":"i love kubernetes for ml engineers"}'
+            - "http://sentiment-api.prod.svc.cluster.local/predict"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
