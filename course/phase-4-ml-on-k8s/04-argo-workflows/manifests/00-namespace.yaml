@@ -1,0 +1,9 @@
+# 인덱싱 파이프라인이 동작할 네임스페이스.
+# argo 컨트롤러는 별도의 argo 네임스페이스에 설치하고, 워크로드만 ml-pipelines 에 둡니다.
+# (네임스페이스를 분리하면 RBAC 의 권한 범위가 자연스럽게 좁아집니다.)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ml-pipelines
+  labels:
+    purpose: argo-workflows-rag-indexing

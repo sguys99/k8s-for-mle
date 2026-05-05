@@ -1,0 +1,97 @@
+# RAG 인덱싱 파이프라인 — 본 토픽의 메인 산출물.
+#
+# 단계: load-docs → chunk → embed → upsert  (DAG, 직선이지만 이후 fan-out 으로 확장 가능)
+#
+# 단계 간 데이터 전달은 PVC 1개를 4단계가 공유하는 방식입니다 (volumeClaimTemplates).
+#  - parameters: 작은 string 만 가능. JSON 배열 같은 건 부적합.
+#  - artifacts:  파일 공유는 가능하나 ArtifactRepository(MinIO/S3) 설정이 필요.
+#  - PVC:        가장 직관적. workflow 단위로 자동 생성/삭제 (onWorkflowCompletion 정책).
+# 본 토픽은 학습 부담을 최소화하려고 PVC 를 택합니다. (lesson.md 1-3 참조.)
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: rag-indexing-
+  namespace: ml-pipelines
+spec:
+  entrypoint: rag-indexing
+  serviceAccountName: workflow
+  # 글로벌 파라미터 — 워크플로우 제출 시 -p key=value 로 덮어쓸 수 있습니다.
+  arguments:
+    parameters:
+    - { name: collection-name, value: "rag-docs" }
+    - { name: chunk-size,      value: "512" }
+    - { name: chunk-overlap,   value: "64" }
+    - { name: embedding-model, value: "sentence-transformers/all-MiniLM-L6-v2" }
+
+  # 4 단계가 공유할 PVC. workflow 가 끝나면 자동 삭제 (volumeClaimGC.strategy=OnWorkflowCompletion)
+  volumeClaimTemplates:
+  - metadata:
+      name: pipeline-data            # 모든 task 가 /data 에 마운트
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests: { storage: 2Gi }
+  volumeClaimGC:
+    strategy: OnWorkflowCompletion   # 워크플로우 종료 시 PVC 자동 정리
+
+  templates:
+
+  # --- DAG 정의 ---
+  - name: rag-indexing
+    dag:
+      tasks:
+      - name: load-docs
+        template: pipeline-step
+        arguments:
+          parameters:
+          - { name: subcommand, value: "load-docs" }
+          - { name: extra-args, value: "" }
+      - name: chunk
+        dependencies: [load-docs]
+        template: pipeline-step
+        arguments:
+          parameters:
+          - { name: subcommand, value: "chunk" }
+          - { name: extra-args, value: "--chunk-size {{workflow.parameters.chunk-size}} --chunk-overlap {{workflow.parameters.chunk-overlap}}" }
+      - name: embed
+        dependencies: [chunk]
+        template: pipeline-step
+        arguments:
+          parameters:
+          - { name: subcommand, value: "embed" }
+          - { name: extra-args, value: "--model {{workflow.parameters.embedding-model}}" }
+      - name: upsert
+        dependencies: [embed]
+        template: pipeline-step
+        arguments:
+          parameters:
+          - { name: subcommand, value: "upsert" }
+          - { name: extra-args, value: "--collection {{workflow.parameters.collection-name}}" }
+
+  # --- 모든 단계가 공유하는 template ---
+  # 같은 이미지(rag-pipeline:0.1.0)가 subcommand 만 바꿔 4단계 모두 처리합니다.
+  # /docs 에는 sample 문서가, /data 에는 단계 간 결과(jsonl)가 쌓입니다.
+  - name: pipeline-step
+    inputs:
+      parameters:
+      - { name: subcommand }
+      - { name: extra-args }
+    container:
+      image: rag-pipeline:0.1.0
+      imagePullPolicy: IfNotPresent       # minikube docker-env 로 빌드한 로컬 이미지 사용 (Always 면 pull 시도하다 실패)
+      command: ["sh", "-c"]
+      # subcommand 는 quote 로 감싸 중간 공백 안전 처리. extra-args 는 그대로 토큰 분해되도록 quote 없이 둠.
+      args:
+        - |
+          set -euo pipefail
+          echo "[$(date -Iseconds)] step={{inputs.parameters.subcommand}} args={{inputs.parameters.extra-args}}"
+          python /app/pipeline.py "{{inputs.parameters.subcommand}}" {{inputs.parameters.extra-args}}
+      env:
+      - { name: QDRANT_URL, value: "http://qdrant.ml-pipelines.svc.cluster.local:6333" }
+      # Hugging Face 모델 캐시를 워크플로우 실행 동안만 살아있는 PVC 로 — 단계 간 모델 재다운로드 방지
+      - { name: HF_HOME,    value: "/data/hf-cache" }
+      resources:
+        requests: { cpu: "200m", memory: "512Mi" }
+        limits:   { cpu: "1500m", memory: "2Gi" }     # 임베딩 단계가 가장 무거움 (~1Gi)
+      volumeMounts:
+      - { name: pipeline-data, mountPath: /data }     # 단계 간 jsonl 공유

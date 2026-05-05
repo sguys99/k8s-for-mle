@@ -1,0 +1,50 @@
+# 인덱싱 결과(임베딩 벡터)를 저장할 Qdrant.
+# 캡스톤(Day 1) 에서는 StatefulSet 으로 띄우지만, 본 토픽은 "Argo Workflow 학습" 에 집중하기 위해
+# Deployment + emptyDir 로 띄웁니다. Pod 재시작하면 인덱스가 사라지지만 학습용으로 충분합니다.
+# (캡스톤에서는 Qdrant 가 StatefulSet + PVC 로 바뀐다는 점을 lesson.md 1-1 에서 명시합니다.)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qdrant
+  namespace: ml-pipelines
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: qdrant }
+  template:
+    metadata:
+      labels: { app: qdrant }
+    spec:
+      containers:
+      - name: qdrant
+        image: qdrant/qdrant:v1.11.3
+        ports:
+        - { name: http, containerPort: 6333 }       # REST API (collections, search, upsert)
+        - { name: grpc, containerPort: 6334 }       # gRPC (본 토픽에서는 사용하지 않음)
+        readinessProbe:
+          httpGet: { path: /readyz, port: http }
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: { path: /healthz, port: http }
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        resources:
+          requests: { cpu: "100m", memory: "256Mi" }
+          limits:   { cpu: "500m", memory: "512Mi" }
+        volumeMounts:
+        - { name: storage, mountPath: /qdrant/storage }
+      volumes:
+      # 학습용 emptyDir. 캡스톤에서는 PVC 로 교체합니다.
+      - { name: storage, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: ml-pipelines
+spec:
+  selector: { app: qdrant }
+  ports:
+  - { name: http, port: 6333, targetPort: http }
+  - { name: grpc, port: 6334, targetPort: grpc }

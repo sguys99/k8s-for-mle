@@ -1,0 +1,79 @@
+# 입문용 DAG 예제. RAG 인덱싱 본편 전에 다음 4가지를 한 매니페스트에서 보여줍니다.
+#   1) entrypoint, templates, dag/tasks 의 기본 골격
+#   2) 의존성(dependencies)으로 fan-out / fan-in 그리는 법
+#   3) parameters 로 단계 간 작은 값(string) 전달하는 법
+#   4) `argo submit --watch` 로 실시간 진행 시각화
+#
+# 시나리오: ML 데이터셋 분석을 흉내내는 5개 단계입니다.
+#   prepare ─┬─> analyze-stats ─┐
+#            └─> analyze-shape ─┴─> join (두 결과 모두 도착해야 실행)
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: hello-dag-                # generateName 을 쓰면 argo 가 -xxxxx suffix 를 붙여 매번 새 워크플로우 생성
+  namespace: ml-pipelines
+spec:
+  entrypoint: dataset-eda                 # 시작 template. 누락하면 "entrypoint template not specified" 로 즉시 실패 (자주 하는 실수 2번)
+  serviceAccountName: workflow            # 01-argo-rbac.yaml 에서 만든 SA. 누락하면 default SA 가 RBAC 없어서 자식 Pod 생성 실패 (자주 하는 실수 1번)
+  templates:
+
+  # --- DAG 정의 ---
+  - name: dataset-eda
+    dag:
+      tasks:
+      - name: prepare
+        template: emit-batch-id           # 시작 task — 다른 task 에 batch-id 를 parameter 로 넘김
+      - name: analyze-stats
+        template: print-with-batch
+        dependencies: [prepare]
+        arguments:
+          parameters:
+          - { name: label, value: "stats" }
+          - { name: batch-id, value: "{{tasks.prepare.outputs.parameters.batch-id}}" }
+      - name: analyze-shape
+        template: print-with-batch
+        dependencies: [prepare]
+        arguments:
+          parameters:
+          - { name: label, value: "shape" }
+          - { name: batch-id, value: "{{tasks.prepare.outputs.parameters.batch-id}}" }
+      - name: join
+        template: print-with-batch
+        # 두 분석이 모두 끝난 뒤에만 실행. 어느 한쪽이 실패하면 join 은 자동으로 Skipped/Failed.
+        dependencies: [analyze-stats, analyze-shape]
+        arguments:
+          parameters:
+          - { name: label, value: "join" }
+          - { name: batch-id, value: "{{tasks.prepare.outputs.parameters.batch-id}}" }
+
+  # --- 재사용 가능한 template 1: prepare 가 parameter 출력 ---
+  # /tmp/batch-id.txt 에 값을 쓰고 outputs.parameters.batch-id 로 노출 → 다음 task 가 참조
+  - name: emit-batch-id
+    container:
+      image: alpine:3.20
+      command: ["sh", "-c"]
+      args:
+        - |
+          BATCH_ID="batch-$(date +%s)"
+          echo "[prepare] generated batch-id=$BATCH_ID"
+          echo -n "$BATCH_ID" > /tmp/batch-id.txt
+    outputs:
+      parameters:
+      - name: batch-id
+        valueFrom:
+          path: /tmp/batch-id.txt
+
+  # --- 재사용 가능한 template 2: 입력 parameter 두 개를 받아 print ---
+  - name: print-with-batch
+    inputs:
+      parameters:
+      - { name: label }
+      - { name: batch-id }
+    container:
+      image: alpine:3.20
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "[{{inputs.parameters.label}}] batch={{inputs.parameters.batch-id}} pod=$HOSTNAME"
+          # 학습용 sleep — UI 에서 fan-out / fan-in 단계가 시각적으로 잘 구분되도록
+          sleep 5

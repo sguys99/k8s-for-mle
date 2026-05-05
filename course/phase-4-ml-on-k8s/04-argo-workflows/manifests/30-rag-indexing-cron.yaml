@@ -1,0 +1,67 @@
+# 일별 자동 재인덱싱.
+# CronWorkflow 는 Workflow 와 spec 구조가 똑같지만 schedule/concurrencyPolicy 가 추가되고,
+# 본문은 workflowSpec 아래로 내려갑니다.
+#
+# 캡스톤에서는 "문서 저장소가 매일 갱신되는데 그날 새로 올라온 문서만 인덱싱하고 싶다" 라는 요구로
+# 그대로 재사용됩니다. 본 토픽에서는 매번 전체 재색인이라 cron 으로도 멱등합니다.
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: rag-indexing-daily
+  namespace: ml-pipelines
+spec:
+  schedule: "0 3 * * *"                    # 매일 03:00 (KST 기준이 아닌 클러스터 컨트롤러 노드의 TZ — minikube 는 UTC)
+  timezone: "Asia/Seoul"                   # 명시적으로 TZ 지정해 학습자 혼동 방지
+  concurrencyPolicy: Replace               # 이전 실행이 아직 안 끝났으면 죽이고 새로 — 인덱싱은 멱등이라 OK
+  successfulJobsHistoryLimit: 2            # 성공한 워크플로우 최근 2건만 유지 (etcd 비대 방지)
+  failedJobsHistoryLimit: 3                # 실패는 좀 더 보존해 디버깅에 도움
+  startingDeadlineSeconds: 300             # 컨트롤러가 5분 이상 늦으면 그 회차는 건너뜀
+
+  # 실제 실행될 워크플로우 본문. 20-rag-indexing-workflow.yaml 의 spec 과 같은 구조여야 합니다.
+  # (학습용으로는 같은 매니페스트 내용을 복사하지만, 운영에서는 WorkflowTemplate 으로 추출해 참조합니다.)
+  workflowSpec:
+    entrypoint: rag-indexing
+    serviceAccountName: workflow
+    arguments:
+      parameters:
+      - { name: collection-name, value: "rag-docs" }
+      - { name: chunk-size,      value: "512" }
+      - { name: chunk-overlap,   value: "64" }
+      - { name: embedding-model, value: "sentence-transformers/all-MiniLM-L6-v2" }
+    volumeClaimTemplates:
+    - metadata: { name: pipeline-data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 2Gi } }
+    volumeClaimGC:
+      strategy: OnWorkflowCompletion
+    templates:
+    - name: rag-indexing
+      dag:
+        tasks:
+        - { name: load-docs, template: pipeline-step, arguments: { parameters: [ { name: subcommand, value: "load-docs" }, { name: extra-args, value: "" } ] } }
+        - { name: chunk,     template: pipeline-step, dependencies: [load-docs], arguments: { parameters: [ { name: subcommand, value: "chunk" }, { name: extra-args, value: "--chunk-size {{workflow.parameters.chunk-size}} --chunk-overlap {{workflow.parameters.chunk-overlap}}" } ] } }
+        - { name: embed,     template: pipeline-step, dependencies: [chunk],     arguments: { parameters: [ { name: subcommand, value: "embed" }, { name: extra-args, value: "--model {{workflow.parameters.embedding-model}}" } ] } }
+        - { name: upsert,    template: pipeline-step, dependencies: [embed],     arguments: { parameters: [ { name: subcommand, value: "upsert" }, { name: extra-args, value: "--collection {{workflow.parameters.collection-name}}" } ] } }
+    - name: pipeline-step
+      inputs:
+        parameters:
+        - { name: subcommand }
+        - { name: extra-args }
+      container:
+        image: rag-pipeline:0.1.0
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - |
+            set -euo pipefail
+            echo "[$(date -Iseconds)] step={{inputs.parameters.subcommand}} args={{inputs.parameters.extra-args}}"
+            python /app/pipeline.py "{{inputs.parameters.subcommand}}" {{inputs.parameters.extra-args}}
+        env:
+        - { name: QDRANT_URL, value: "http://qdrant.ml-pipelines.svc.cluster.local:6333" }
+        - { name: HF_HOME,    value: "/data/hf-cache" }
+        resources:
+          requests: { cpu: "200m", memory: "512Mi" }
+          limits:   { cpu: "1500m", memory: "2Gi" }
+        volumeMounts:
+        - { name: pipeline-data, mountPath: /data }
