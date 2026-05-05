@@ -1,0 +1,53 @@
+# =============================================================================
+# Phase 4 / 05 — KubeRay RayJob (토이, CPU only)
+#
+# 본 매니페스트는 *기존* RayCluster (00-kuberay-raycluster-toy.yaml) 를 재사용해
+# 짧은 Python 코드를 분산 실행합니다. RayJob 은 두 가지 동작 방식을 지원합니다.
+#
+#  - clusterSelector  : 이미 떠 있는 RayCluster 를 *재사용* (본 매니페스트가 사용)
+#  - rayClusterSpec   : Job 시작 시 *임시 RayCluster 를 새로 생성* 후 종료 시 함께 삭제
+#
+# 본 토픽은 학습자가 head/worker Pod 를 먼저 손으로 띄워 본 다음 그 위에 Job 을
+# 던져보는 흐름이라, 첫 번째 방식 (clusterSelector) 으로 갑니다.
+#
+# - 사전:        00-kuberay-raycluster-toy.yaml 의 raycluster-toy 가 Ready 상태여야 함
+# - 적용:        kubectl apply -n ray-demo -f manifests/01-kuberay-rayjob-toy.yaml
+# - 검증:        kubectl get rayjob,pods -n ray-demo
+# - 로그 확인:   kubectl logs -n ray-demo job/$(kubectl get rayjob -n ray-demo \
+#                  rayjob-toy -o jsonpath='{.status.jobDeploymentStatus}')
+# - 정리:        kubectl delete -f manifests/01-kuberay-rayjob-toy.yaml -n ray-demo
+# =============================================================================
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: rayjob-toy
+spec:
+  # 어떤 RayCluster 위에서 실행할지 라벨로 선택. RayCluster 의 metadata.name 과 일치.
+  clusterSelector:
+    ray.io/cluster: raycluster-toy
+
+  # 본 토픽의 핵심: head 의 Python interpreter 로 5초짜리 분산 코드를 실행해
+  # 클러스터의 자원 (CPU/메모리/노드 수) 이 *세 Pod 를 합친 값* 으로 보이는지 확인.
+  entrypoint: |
+    python -c "
+    import ray
+    ray.init()
+    print('=== ray.cluster_resources() ===')
+    print(ray.cluster_resources())
+    print('=== ray.nodes() (count only) ===')
+    print(f'node_count = {len(ray.nodes())}')
+
+    @ray.remote
+    def square(x):
+        return x * x
+    futures = [square.remote(i) for i in range(8)]
+    print('=== distributed map result ===')
+    print(ray.get(futures))
+    "
+
+  # Job 종료 후 RayCluster 를 *유지* 합니다 (Step 5 의 다른 검증을 위해).
+  # 운영에서 임시 클러스터 패턴을 쓸 때는 shutdownAfterJobFinishes: true 가 일반적.
+  shutdownAfterJobFinishes: false
+
+  # entrypoint 가 5초 안에 끝나야 정상. 무한 루프나 멈춤 방지용 보호 장치.
+  activeDeadlineSeconds: 120

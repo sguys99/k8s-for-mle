@@ -1,0 +1,93 @@
+# =============================================================================
+# Phase 4 / 05 — Kubeflow Training Operator PyTorchJob (분석 전용)
+#
+# ⚠ 본 매니페스트는 *실행하지 마세요*. lesson.md §1-3 에서 라인별로 해부하기
+#   위한 분석용 예제입니다. 본 토픽은 minikube 에서 KubeRay 만 실제 실행하고,
+#   Kubeflow Training Operator 는 *매니페스트의 모양을 비교* 하는 데 그칩니다.
+#
+# 실행하려면 다음 사전 작업이 필요합니다 (본 토픽 범위 밖):
+#   1. Kubeflow Training Operator 설치
+#      kubectl apply -k "github.com/kubeflow/training-operator/manifests/overlays/standalone?ref=v1.8.1"
+#   2. 학습 코드가 포함된 컨테이너 이미지 빌드 (DDP 초기화 + 토이 모델)
+#   3. GPU 노드 (또는 본 매니페스트에서 nvidia.com/gpu 라인 제거)
+#
+# 본 토픽은 PyTorchJob 의 *디자인 의도* — DDP 통신을 위한 환경변수
+# (MASTER_PORT, MASTER_ADDR, WORLD_SIZE, RANK) 자동 주입, Master/Worker 역할
+# 분리, cleanPodPolicy — 를 코드로 보는 것이 목표입니다.
+# =============================================================================
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: pytorch-ddp-toy
+  # 본 매니페스트는 분석 전용이므로 namespace 를 비워둡니다.
+  # 실제 실행 시 kubeflow 또는 별도 namespace 를 만들어 사용합니다.
+spec:
+  # ---------------------------------------------------------------------------
+  # cleanPodPolicy — *학습 종료 후 Pod 처리 정책* (자주 하는 실수 1번)
+  #
+  #   None       : 학습 종료 후에도 Pod 유지 (디버깅 시 유용하지만 GPU 점유 위험)
+  #   OnFailure  : 실패한 Pod 만 유지
+  #   All        : 모든 Pod 정리 (운영 권장 — 본 매니페스트의 선택)
+  #
+  # 누락하면 default 가 None — *학습이 끝나도 Pod 가 살아 있어 GPU 가 풀리지 않음*.
+  # 다음 학습 Job 이 GPU 부족으로 Pending 무한 대기. lesson.md §자주 하는 실수 1.
+  # ---------------------------------------------------------------------------
+  runPolicy:
+    cleanPodPolicy: All
+    # 12시간 안에 끝나지 않으면 강제 종료 (안전장치)
+    activeDeadlineSeconds: 43200
+
+  # ---------------------------------------------------------------------------
+  # pytorchReplicaSpecs — Master 1 + Worker 2 = 총 3개 Pod
+  #
+  # Training Operator 가 *각 Pod 안에 자동으로 주입* 하는 환경변수:
+  #   MASTER_ADDR  : Master Pod 의 K8s Service DNS 이름
+  #   MASTER_PORT  : 기본 23456 (충돌 시 변경 가능)
+  #   WORLD_SIZE   : Master + 모든 Worker replica 의 총합 = 3
+  #   RANK         : Master = 0, Worker[0] = 1, Worker[1] = 2
+  #
+  # 이 환경변수가 *없으면* torch.distributed.init_process_group(backend="nccl") 이
+  # 무한 대기. Training Operator 의 가장 큰 가치는 *이 4개 환경변수의 자동 주입*.
+  # KubeRay 가 ray.init() 한 줄로 통신을 추상화하는 것과 대조 (lesson.md §1-4).
+  # ---------------------------------------------------------------------------
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: OnFailure
+      template:
+        spec:
+          containers:
+          - name: pytorch
+            # TODO: 실제 학습 코드를 포함한 이미지로 교체 (예: my-train:0.1)
+            # 이미지 안의 entrypoint 는 다음을 호출해야 함:
+            #   torch.distributed.init_process_group(backend="nccl")  # GPU
+            #   torch.distributed.init_process_group(backend="gloo")  # CPU 토이
+            image: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+            command:
+            - python
+            - /workspace/train.py
+            resources:
+              requests: { cpu: "1", memory: "2Gi" }
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+                # GPU 클러스터에서는 다음 라인 활성화. CPU 토이로 분석할 때는 주석 유지.
+                # nvidia.com/gpu: 1
+
+    Worker:
+      replicas: 2     # Master 1 + Worker 2 → WORLD_SIZE=3
+      restartPolicy: OnFailure
+      template:
+        spec:
+          containers:
+          - name: pytorch
+            image: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+            command:
+            - python
+            - /workspace/train.py
+            resources:
+              requests: { cpu: "1", memory: "2Gi" }
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+                # nvidia.com/gpu: 1

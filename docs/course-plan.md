@@ -134,10 +134,10 @@
   - [x] labs/
   - [ ] minikube 검증 _(학습자가 labs Step 0–10 실행 후 갱신)_
 - [ ] **05-distributed-training-intro** — KubeRay·Kubeflow Training Operator 개념 비교 (실습은 짧게)
-  - [ ] lesson.md
-  - [ ] 매니페스트/코드
-  - [ ] labs/
-  - [ ] minikube 검증
+  - [x] lesson.md
+  - [x] 매니페스트/코드
+  - [x] labs/
+  - [ ] minikube 검증 _(학습자가 labs Step 0–7 실행 후 갱신)_
 
 ---
 
