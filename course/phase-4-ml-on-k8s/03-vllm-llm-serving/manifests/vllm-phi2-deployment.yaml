@@ -1,0 +1,135 @@
+# vllm-phi2-deployment.yaml — vLLM OpenAI 호환 서빙 (메인 매니페스트)
+#
+# 본 토픽의 *유일한 핵심 매니페스트* 입니다. Phase 4/01 의 sentiment-gpu-deployment.yaml 과 비교하면
+# GPU 노드 격리 3종(nodeSelector + toleration + nvidia.com/gpu: 1) 패턴이 그대로 재사용되고,
+# 다음 *5 가지* 가 새로 등장합니다.
+#   ① 컨테이너 args 5종 — vLLM 의 핵심 옵션 (model, gpu-memory-utilization, max-model-len, port)
+#   ② startupProbe failureThreshold 60 — 첫 기동 시 모델 다운로드 5~10분 허용
+#   ③ /dev/shm emptyDir.medium=Memory — CUDA IPC 공유 메모리 (자주 하는 실수 2번 방지)
+#   ④ /root/.cache/huggingface PVC 마운트 — Pod 재시작 시 모델 재다운로드 방지
+#   ⑤ /metrics 엔드포인트 노출 — vllm-servicemonitor.yaml 가 스크래핑 대상으로 삼음
+#
+# Track 별 적용 가이드:
+#   - Track A (minikube, GPU 없음): `kubectl apply --dry-run=server -f vllm-phi2-deployment.yaml`
+#                                    로 admission 통과만 확인 (실제 apply 시 GPU 자원이 없어 Pending).
+#                                    Track A 의 *동작 검증* 은 vLLM CPU 빌드 이미지로 별도 진행 — labs Step 2A 참고.
+#   - Track B (GKE T4 / 로컬 GPU)   : 그대로 apply → 모델 다운로드 5~10분 → Running.
+#                                    `kubectl logs -f deploy/vllm-phi2` 로 다음 로그가 보이면 ready:
+#                                    `INFO ... Started server process` + `Uvicorn running on http://0.0.0.0:8000`
+#
+# 모델: microsoft/phi-2 (2.7B 파라미터, FP16 ~5.4GB, max context 2048)
+# 대안 모델 (한 줄 교체로 전환 가능):
+#   --model=Qwen/Qwen2.5-1.5B-Instruct   # 더 작음 (3GB), 한국어 품질↑
+#   --model=microsoft/Phi-3.5-mini-instruct  # 더 큼 (7.6GB), T4 메모리 빠듯 — utilization 0.95 필요
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-phi2
+  labels:
+    app: vllm-phi2
+    phase: "4"
+    topic: "03-vllm-llm-serving"
+    component: llm-serving
+spec:
+  replicas: 1                              # vLLM 은 GPU 1장 = 1 Pod 가 표준. HPA 시 GPU 노드 수와 함께 증가
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: vllm-phi2
+  template:
+    metadata:
+      labels:
+        app: vllm-phi2
+        component: llm-serving
+    spec:
+      # ── GPU 노드 격리 3종 (Phase 4/01 패턴 그대로 재사용) ──
+      nodeSelector:
+        # GKE GPU 노드 풀이 자동 부여하는 라벨. EKS 는 `nvidia.com/gpu.product`, AKS 는 `accelerator` 등 클러스터별 상이.
+        cloud.google.com/gke-accelerator: nvidia-tesla-t4
+      tolerations:
+        # GKE GPU 노드의 기본 taint `nvidia.com/gpu=present:NoSchedule` 를 통과 — toleration 누락 시 Pending (자주 하는 실수 1번).
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: vllm
+          # 운영에서는 `latest` 대신 버전 핀을 권장합니다. 0.6.x 부터 OpenAI 호환 API 의 chat-template 처리가 안정화.
+          image: vllm/vllm-openai:v0.6.6.post1
+          imagePullPolicy: IfNotPresent
+          # ── vLLM 핵심 args 5종 ──
+          # vLLM 은 컨테이너 ENTRYPOINT 가 `python -m vllm.entrypoints.openai.api_server` 이고,
+          # args 가 그대로 그 서버의 옵션이 됩니다. `--help` 로 전체 목록 확인 가능.
+          args:
+            - --model=microsoft/phi-2          # ① HF Hub 모델 ID. 첫 로드 시 자동 다운로드 (5~10분).
+            - --gpu-memory-utilization=0.85    # ② GPU VRAM 의 85% 까지 사용 (모델 가중치 + KV cache). 0.95+ 면 OOM 위험 (자주 하는 실수 3번).
+            - --max-model-len=2048             # ③ phi-2 의 학습 시 max context. 늘릴 수 없음 — 늘리면 KV cache OOM.
+            - --port=8000                      # ④ HTTP 서버 포트. Service targetPort 와 일치해야 함.
+            - --dtype=auto                     # ⑤ FP16 (T4) 자동 감지. T4 는 BF16 미지원이므로 auto 가 안전.
+            # 참고 (본 토픽에서는 사용 안 함, lesson.md 끝의 "더 알아보기" 박스 참조):
+            # - --quantization=awq             # AWQ 양자화 모델 (예: TheBloke/phi-2-AWQ) 로딩 — VRAM 50%↓
+            # - --tensor-parallel-size=2       # 멀티 GPU 분산 — Pod 안에서 GPU 여러 장 사용
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            # HF 토큰 (gated 모델용). phi-2 는 public 이라 optional: true — Secret 이 없어도 무시.
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: HF_TOKEN
+                  optional: true
+            # vLLM 0.6+ 는 모델 캐시 위치를 HF 표준 환경변수로 받습니다.
+            - name: HF_HOME
+              value: /root/.cache/huggingface
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"                  # 모델 다운로드/언팩 중 일시적으로 호스트 RAM 5GB+ 사용
+              # ── GPU 자원 ──
+              # extended resource — 정수만 / requests = limits 필수 (Phase 4/01 의 4 가지 규칙 적용)
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "4"
+              memory: "16Gi"                 # GPU 메모리와 별개의 호스트 RAM 상한. T4 노드 전체 RAM 의 50% 이하 권장
+              nvidia.com/gpu: 1
+          # ── 3종 Probe ──
+          # vLLM 의 첫 기동은 *모델 다운로드(5~10분) + GPU 메모리에 가중치 로드(30~60초) + KV cache 할당(수 초)*
+          # 으로 합쳐서 5~10분이 일상적입니다. 이 시간 동안 livenessProbe 가 fail 하면 무한 재시작 루프에 빠지므로
+          # *startupProbe 를 길게* 두고, 통과 후에야 liveness/readiness 가 시작되도록 합니다.
+          startupProbe:
+            httpGet:
+              path: /health                  # vLLM OpenAI 서버의 표준 헬스 엔드포인트
+              port: http
+            failureThreshold: 60             # 60 × 10s = 최대 10분 모델 로딩 허용
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            # 모델 캐시 — 첫 다운로드 후 재시작 시 30초 안에 ready
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+            # CUDA IPC 가 사용하는 공유 메모리. 기본 64MB 로는 vLLM 의 worker 통신이 막힘 (자주 하는 실수 2번).
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-phi2-cache
+        - name: shm
+          emptyDir:
+            medium: Memory                   # tmpfs 로 마운트 — 디스크가 아닌 RAM 에 잡힘
+            sizeLimit: 4Gi                   # phi-2 한 모델 기준 충분. 7B+ 또는 tensor-parallel 사용 시 8Gi+ 로
+      terminationGracePeriodSeconds: 60      # vLLM 은 종료 시 KV cache flush + 진행 중 요청 마감에 시간이 걸림

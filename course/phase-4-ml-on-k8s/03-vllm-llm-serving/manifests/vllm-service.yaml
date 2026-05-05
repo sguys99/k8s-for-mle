@@ -1,0 +1,37 @@
+# vllm-service.yaml — vllm-phi2 Pod 앞에 붙는 ClusterIP Service
+#
+# 캡스톤의 RAG API 가 안정적으로 호출할 수 있는 *내부 endpoint* 를 제공합니다.
+# Pod IP 는 재기동 시 바뀌지만, Service 의 ClusterIP / DNS 이름은 고정 — 같은 namespace 안에서는
+#   http://vllm-phi2:8000/v1/chat/completions
+# 다른 namespace 에서는
+#   http://vllm-phi2.<namespace>.svc.cluster.local:8000/v1/chat/completions
+# 로 접근합니다.
+#
+# 외부 접근 (호스트 머신 → 클러스터) 은 본 토픽에선 `kubectl port-forward` 로 단순화합니다.
+#   `kubectl port-forward svc/vllm-phi2 8000:8000` 후 localhost:8000 으로 호출.
+# 캡스톤에선 Phase 2/03 의 nginx-ingress 가 vllm-phi2 Service 를 라우팅 대상으로 삼습니다.
+#
+# Service type:
+#   - ClusterIP : 클러스터 내부 + port-forward (본 토픽 기본)
+#   - NodePort  : 노드 IP 로 직접 노출 — minikube 의 `minikube service vllm-phi2` 에 편리하나 보안상 권장 X
+#   - LoadBalancer : 클라우드 LB 자동 생성 — Phase 1/03 에서 다룬 패턴
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-phi2
+  labels:
+    app: vllm-phi2
+    phase: "4"
+    topic: "03-vllm-llm-serving"
+    component: llm-serving
+spec:
+  type: ClusterIP
+  selector:
+    # Deployment 의 `template.metadata.labels.app` 와 매칭. 다른 Deployment 의 Pod 가 끼어들지 않도록 단일 라벨로 한정.
+    app: vllm-phi2
+  ports:
+    - name: http                           # ServiceMonitor 의 `port: http` 와 이름이 일치해야 스크래핑 성립
+      port: 8000                           # 클러스터 내부에서 부르는 포트 — 컨테이너 포트와 동일하게 맞춰 단순화
+      targetPort: http                     # Deployment 의 ports.name 과 동일 — 숫자 8000 대신 이름으로 참조하면 컨테이너 포트 변경 시 추적 쉬움
+      protocol: TCP

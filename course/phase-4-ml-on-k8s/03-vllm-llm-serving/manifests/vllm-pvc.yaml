@@ -1,0 +1,35 @@
+# vllm-pvc.yaml — vLLM 모델 캐시용 PVC
+#
+# Phase 2/02 [course/phase-2-operations/02-volumes-pvc/] 의 PVC 패턴을 LLM 규모로 확장한 버전입니다.
+# 분류 모델(~500MB) 은 PVC 없이도 부담이 없었지만, LLM 은 *5GB+* 라 한 번 다운로드한 가중치를
+# Pod 재시작 시 *재다운로드 하지 않게* 하는 것이 운영 시간/비용에 큰 차이를 만듭니다.
+#
+# microsoft/phi-2 의 디스크 사용량 (참고치):
+#   - 모델 가중치 (FP16, safetensors)   : 약 5.4 GB
+#   - tokenizer / config / HF metadata  : 수십 MB
+#   - HF Hub 의 임시 다운로드 버퍼      : 모델 크기의 1~1.5 배 (다운로드 중 한시적)
+# 따라서 20Gi 면 phi-2 단일 모델에 충분하고, 향후 Qwen/Qwen2.5-1.5B-Instruct 같은
+# 1~3B SLM 으로 교체해도 여유가 있습니다. 7B+ 모델은 50Gi 로 상향.
+#
+# 마운트 위치는 vLLM 컨테이너의 HF 캐시 기본 경로 `/root/.cache/huggingface` 입니다.
+# vLLM 은 첫 기동 시 이 경로에 모델을 받고, 다음 기동부터는 캐시 hit 으로 30초 안에 모델을 로드.
+#
+# ⚠ accessMode 는 ReadWriteOnce — vLLM 은 GPU 1장당 Pod 1개가 표준이라 RWO 면 충분합니다.
+#   캡스톤에서 vLLM Pod 을 GPU 여러 장에 분산할 일이 생기면 (현실적이지 않음) RWX 로 검토.
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-phi2-cache
+  labels:
+    app: vllm-phi2
+    phase: "4"
+    topic: "03-vllm-llm-serving"
+spec:
+  accessModes:
+    - ReadWriteOnce                # vLLM Pod 은 GPU 1장 = 1 Pod 가 표준 — RWO 면 충분
+  resources:
+    requests:
+      storage: 20Gi                # phi-2(2.7B) 기준. 7B+ 모델로 교체 시 50Gi 로 상향
+  # storageClassName 미지정 → 클러스터의 default StorageClass 사용 (minikube=standard, GKE=standard-rwo)
+  # 명시 필요 시: storageClassName: standard

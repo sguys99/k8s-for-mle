@@ -1,0 +1,41 @@
+# vllm-servicemonitor.yaml — vLLM 메트릭을 Prometheus 가 스크래핑하도록 연결
+#
+# Phase 3/02 [course/phase-3-production/02-prometheus-grafana/] 에서 설치한 kube-prometheus-stack 의
+# Prometheus 인스턴스가 본 ServiceMonitor 를 watch 해 자동으로 vllm-phi2 Service 의 /metrics 를
+# 스크래핑 대상에 추가합니다. *별도 Prometheus 설정 변경 없이* ServiceMonitor 매니페스트 한 장이면 끝.
+#
+# 사전 조건:
+#   - kube-prometheus-stack 설치되어 있고 Prometheus CRD (`servicemonitors.monitoring.coreos.com`) 가 등록되어 있어야 함.
+#   - Prometheus CR 의 `serviceMonitorSelector` 가 본 ServiceMonitor 를 포함해야 함 (kube-prometheus-stack 기본값은 모든 namespace 허용).
+#
+# vLLM 이 노출하는 핵심 메트릭 (lesson.md 1-6 절 참고):
+#   - vllm:num_requests_running     : 현재 GPU 에서 동시 처리 중인 요청 수 (continuous batching 의 효과 측정)
+#   - vllm:num_requests_waiting     : KV cache 부족으로 대기 중인 요청 수 (이게 0 이 아니면 GPU 메모리 부족)
+#   - vllm:gpu_cache_usage_perc     : KV cache 사용률 (0.0 ~ 1.0). 0.9 넘으면 더 큰 GPU 또는 max-model-len 축소 검토
+#   - vllm:time_to_first_token_seconds : TTFT — 사용자 체감 latency 의 핵심 지표
+#   - vllm:e2e_request_latency_seconds : 요청 전체 latency 분포 (히스토그램)
+#   - vllm:generation_tokens_total  : 누적 생성 토큰 수 (처리량 RPS 와 함께 보면 토큰/sec 산출)
+#
+# Grafana 대시보드는 본 토픽에서는 만들지 않습니다 — Phase 3/02 에서 익힌 PromQL 로 위 메트릭을 직접 쿼리.
+# 캡스톤에서 vLLM + RAG + Qdrant 통합 대시보드를 한 번에 만듭니다.
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vllm-phi2
+  labels:
+    app: vllm-phi2
+    phase: "4"
+    topic: "03-vllm-llm-serving"
+    # kube-prometheus-stack 의 Prometheus 가 watch 하는 라벨. 기본값은 모든 ServiceMonitor 를 보지만,
+    # 운영 클러스터에서 Prometheus 가 `release: kube-prometheus-stack` 같은 라벨로 한정한 경우 같은 라벨을 추가.
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: vllm-phi2                  # vllm-service.yaml 의 라벨과 매칭 — 이 selector 로 Service 1개를 정확히 잡음
+  endpoints:
+    - port: http                      # Service 의 ports.name 과 일치 (8000 직접 적는 대신 이름 참조)
+      path: /metrics                  # vLLM 의 표준 Prometheus 노출 경로 — 별도 설정 없이 켜져 있음
+      interval: 15s                   # 15 초 간격 — LLM 추론은 분 단위 변동도 흔하므로 15s 면 충분
+      scrapeTimeout: 10s              # 메트릭 페이지 응답 timeout. /metrics 가 무거워질 일은 거의 없음

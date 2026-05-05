@@ -1,0 +1,63 @@
+# vllm-mistake-cpu-only.yaml — *의도적으로 잘못 만든* 매니페스트 (자주 하는 실수 1번 시연용)
+#
+# Phase 4/01 의 sentiment-gpu-mistake.yaml 과 같은 *학습 도구* 입니다. 학습자가 직접 apply 해보고
+# `kubectl describe pod` 로 어떤 에러 메시지가 뜨는지 확인하는 것이 본 매니페스트의 목적입니다.
+#
+# 이 매니페스트가 *틀린* 부분 (vllm-phi2-deployment.yaml 과의 diff):
+#   ① resources 에 `nvidia.com/gpu: 1` *누락*  ← 핵심 실수
+#   ② nodeSelector `cloud.google.com/gke-accelerator` *누락*
+#   ③ tolerations 누락 — taint 가 걸린 GPU 노드는 어차피 못 들어감
+#
+# 각 환경별 실패 양상:
+#   - Track A (minikube, GPU 노드 없음): Pod 가 *Running 으로 뜨긴 함* — 그러나 vLLM 이 GPU 를 못 찾아
+#       내부에서 CUDA 초기화 에러로 CrashLoopBackOff. 로그에 `RuntimeError: No CUDA GPUs are available` 메시지.
+#   - Track B (GKE, GPU 노드 + 일반 노드 혼재): Pod 가 *일반 노드* 에 schedule 됨 (taint 가 GPU 노드에만 있으므로).
+#       일반 노드에 GPU 가 없어 위 Track A 와 같은 CrashLoopBackOff. `kubectl describe pod` 의 events 에는 정상 schedule.
+#       즉 *잘못된 노드* 로 갔다는 사실을 logs 를 봐야 알 수 있습니다 — 이게 GPU 매니페스트가 까다로운 이유.
+#
+# 학습 포인트: GPU Pod 에서 `nvidia.com/gpu` 가 빠지면 *Pending 으로도 안 끝나고 Running 으로도 안 끝나는*
+#   까다로운 실패 형태가 됩니다. 항상 nodeSelector + toleration + nvidia.com/gpu 를 *세트로* 챙기세요.
+#
+# ⚠ 이 매니페스트는 *의도적 실패* 가 목적입니다. 학습 후 즉시 삭제하세요:
+#   `kubectl delete -f manifests/vllm-mistake-cpu-only.yaml`
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-phi2-mistake                  # 정상 Deployment 와 이름 충돌 방지 — 둘이 동시에 떠 있어도 OK
+  labels:
+    app: vllm-phi2-mistake
+    phase: "4"
+    topic: "03-vllm-llm-serving"
+    purpose: mistake-demo                  # 라벨 하나로 자주 하는 실수 시연 Pod 만 골라 삭제: `kubectl delete deploy -l purpose=mistake-demo`
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-phi2-mistake
+  template:
+    metadata:
+      labels:
+        app: vllm-phi2-mistake
+    spec:
+      # ❌ nodeSelector 없음 — 일반 노드에도 schedule 가능 (정상 매니페스트와의 diff ②)
+      # ❌ tolerations 없음                                                    (정상 매니페스트와의 diff ③)
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.6.6.post1
+          args:
+            - --model=microsoft/phi-2
+            - --port=8000
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+              # ❌ nvidia.com/gpu 가 *없음* — 핵심 실수 (정상 매니페스트와의 diff ①)
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+              # ❌ 여기에도 nvidia.com/gpu 가 *없음*
+          # probe 는 정상이라도 컨테이너가 CUDA 초기화에서 죽으므로 의미 없음 (logs 가 진단 도구)

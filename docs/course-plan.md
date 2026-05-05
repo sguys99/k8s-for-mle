@@ -124,10 +124,10 @@
   - [x] labs/
   - [ ] minikube 검증 _(학습자가 labs Step 0–7 실행 후 갱신)_
 - [ ] **03-vllm-llm-serving** — vLLM Deployment + OpenAI 호환 API, `microsoft/phi-2` 또는 `Qwen/Qwen2.5-1.5B-Instruct` (모델 전환 지점)
-  - [ ] lesson.md
-  - [ ] 매니페스트/코드
-  - [ ] labs/
-  - [ ] GPU 클러스터 검증
+  - [x] lesson.md
+  - [x] 매니페스트/코드
+  - [x] labs/
+  - [ ] GPU 클러스터 검증 _(학습자가 labs Track B Step 0–8 실행 후 갱신)_
 - [ ] **04-argo-workflows** — DAG 워크플로 기초, RAG 인덱싱 파이프라인 프로토타입
   - [ ] lesson.md
   - [ ] 매니페스트/코드
