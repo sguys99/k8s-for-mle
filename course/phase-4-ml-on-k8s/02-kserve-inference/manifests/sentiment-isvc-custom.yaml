@@ -1,0 +1,59 @@
+# Phase 4 / 02-kserve-inference — sentiment InferenceService (보조 경로: 커스텀 predictor)
+# 목적: Phase 0~3에서 만든 sentiment-api:v1 이미지를 그대로 KServe로 감쌉니다.
+#       빌트인 runtime을 못 쓰는 상황(전·후처리 로직, 사내 표준 이미지)에서 동일한
+#       InferenceService 추상화를 받기 위한 패턴입니다.
+#
+# ⚠️ 표준 V1 프로토콜과의 차이:
+#   - 빌트인 runtime: POST /v1/models/sentiment:predict   { "instances": ["..."] }
+#   - 커스텀 컨테이너: POST /predict                       { "text": "..." }
+#     (Phase 0의 fastapi_app.py 스키마를 그대로 노출. Knative는 path를 변환하지 않습니다.)
+#   상황에 따라 클라이언트 호출 경로가 달라지므로 운영 합의가 필요합니다.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: sentiment-custom                     # 메인 ISVC와 이름을 분리해 동시에 띄울 수 있게 함
+  labels:
+    app: sentiment-custom
+    phase: "4"
+    topic: "02-kserve-inference"
+spec:
+  predictor:
+    minReplicas: 1                           # 커스텀 predictor는 cold start가 더 길어 학습용으로는 1로 시작 권장
+    maxReplicas: 3
+    containers:
+    - name: kserve-container                 # KServe가 인식하는 메인 컨테이너 이름 (반드시 'kserve-container')
+      image: sentiment-api:v1                # Phase 0 lab에서 minikube 노드에 적재된 이미지 그대로 재사용
+      imagePullPolicy: IfNotPresent
+      ports:
+      - name: http
+        containerPort: 8000                  # FastAPI/uvicorn 포트
+      env:
+      - name: APP_VERSION
+        value: "v1"
+      - name: MODEL_NAME
+        value: "cardiffnlp/twitter-roberta-base-sentiment"
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "800Mi"
+        limits:
+          cpu: "1"
+          memory: "1500Mi"
+      # ---- Probe (Phase 1/04 deployment.yaml과 동일 값) ----
+      # KServe는 우리가 명시한 probe를 그대로 사용합니다. 모델 로딩이 길어 failureThreshold 24가 핵심.
+      readinessProbe:
+        httpGet:
+          path: /ready                       # FastAPI: 모델 로드 완료 시 200, 로딩 중이면 503
+          port: 8000
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        failureThreshold: 24                 # 5초 × 24 = 모델 로딩에 최대 120초 허용
+        timeoutSeconds: 2
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8000
+        initialDelaySeconds: 60
+        periodSeconds: 15
+        failureThreshold: 3
+        timeoutSeconds: 2

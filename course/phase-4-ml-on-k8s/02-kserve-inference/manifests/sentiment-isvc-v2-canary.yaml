@@ -1,0 +1,48 @@
+# Phase 4 / 02-kserve-inference — sentiment InferenceService v2 (Canary 30%)
+# 목적: 메인 sentiment ISVC에 v2 변경(maxReplicas, memory)을 얹고 canaryTrafficPercent로
+#       v1/v2 트래픽을 70/30으로 분할합니다. PodSpec이 달라지면 Knative가 새 Revision을
+#       생성하고 두 Revision 모두에 트래픽을 흘립니다.
+#
+# 적용 흐름:
+#   1) 먼저 sentiment-isvc.yaml (v1) 이 적용되어 있어야 합니다 (READY=True)
+#   2) 본 매니페스트를 kubectl apply 하면 같은 이름(sentiment)의 ISVC 가 갱신됩니다
+#   3) kubectl get revision 으로 두 개의 Revision 확인
+#   4) curl 응답 헤더 'K-Knative-Revision' 으로 어느 Revision 이 처리했는지 식별
+#
+# ⚠️ 같은 metadata.name(sentiment)을 유지해야 KServe가 Canary로 인식합니다.
+#    이름을 바꾸면 새 ISVC 가 만들어져 Canary 가 아닌 별개 서비스가 됩니다.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: sentiment                            # v1 매니페스트와 같은 이름 (필수)
+  labels:
+    app: sentiment
+    phase: "4"
+    topic: "02-kserve-inference"
+    revision: "v2"                           # 학습용 식별자 (KServe 동작과는 무관)
+spec:
+  predictor:
+    minReplicas: 0
+    maxReplicas: 5                           # v2 변경점 ①: 3 → 5 (트래픽 늘어날 것을 가정)
+    timeout: 120
+    canaryTrafficPercent: 30                 # v2(현재 spec) 에 30%, 나머지 70% 는 v1 Revision 으로
+    model:
+      modelFormat:
+        name: huggingface
+      args:
+      - --model_id=cardiffnlp/twitter-roberta-base-sentiment
+      - --task=text-classification
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "1500Mi"                   # v2 변경점 ②: 1Gi → 1.5Gi (PodSpec 해시가 달라져 새 Revision 생성)
+        limits:
+          cpu: "2"
+          memory: "3Gi"                      # v2 변경점 ③: 2Gi → 3Gi (v2 가 더 여유로운 자원 할당이라는 가정)
+      env:
+      - name: HF_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: hf-secret
+            key: HF_TOKEN
+            optional: true

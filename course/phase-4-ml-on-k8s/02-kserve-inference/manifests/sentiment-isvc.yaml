@@ -1,0 +1,42 @@
+# Phase 4 / 02-kserve-inference — sentiment InferenceService (메인 경로)
+# 목적: Phase 0~3에서 누적된 cardiffnlp/twitter-roberta-base-sentiment 분류 모델을
+#       KServe 빌트인 HuggingFace 런타임으로 서빙합니다.
+#       Phase 1/04 deployment.yaml(60줄+)이 이 한 매니페스트(30줄)로 줄어드는 점에
+#       주목하세요. probe·Service·Endpoints 같은 K8s 잡일을 KServe가 가져갑니다.
+# 사전 조건: KServe + Knative + Istio 설치 (kserve quick_install.sh 권장)
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: sentiment                            # 외부 호출 URL의 모델 이름이 됩니다: /v1/models/sentiment:predict
+  labels:
+    app: sentiment
+    phase: "4"
+    topic: "02-kserve-inference"
+spec:
+  predictor:
+    minReplicas: 0                           # scale-to-zero. 60초 idle 후 Pod이 0으로 줄어듭니다 (cold start 30~120초 주의)
+    maxReplicas: 3                           # 트래픽 급증 시 최대 3개까지 확장 (Knative HPA 자동 동작)
+    timeout: 120                             # 요청 타임아웃(초). HF 첫 추론은 모델 워밍 때문에 길어질 수 있습니다
+    model:
+      modelFormat:
+        name: huggingface                    # 빌트인 runtime: huggingface | sklearn | pytorch | tensorflow | triton 중 선택
+      args:
+      - --model_id=cardiffnlp/twitter-roberta-base-sentiment   # HF Hub에서 자동 다운로드 (~500MB, 첫 기동 시 30~90초)
+      - --task=text-classification           # 명시적 task 지정 (HF Auto* 추론 실패 시 안전장치)
+      resources:
+        requests:
+          cpu: "500m"                        # 분류 모델 CPU 추론은 0.5코어로 시작. RPS↑ 시 limits 안에서 자동 확장
+          memory: "1Gi"                      # 모델(~500MB) + tokenizer + Python 스택 여유. 8GB minikube에서 안정적
+        limits:
+          cpu: "2"
+          memory: "2Gi"                      # OOMKilled 방지 상한. 실서비스에서는 부하 테스트 후 상향 검토
+          # GPU 사용 시 주석 해제 (Phase 4-1의 nodeSelector/toleration도 함께 추가)
+          # nvidia.com/gpu: 1
+      # private 모델은 HF 토큰 필요. cardiffnlp는 public이라 secret이 없어도 무시됩니다(optional: true).
+      env:
+      - name: HF_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: hf-secret
+            key: HF_TOKEN
+            optional: true
