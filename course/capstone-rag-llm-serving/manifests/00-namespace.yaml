@@ -1,0 +1,10 @@
+# 캡스톤 전체 컴포넌트(Qdrant, vLLM, RAG API, 인덱싱 Workflow)를 격리하는 Namespace 입니다.
+# Phase 4-4 의 ml-pipelines 와 분리해 RBAC, ResourceQuota, ServiceMonitor 를 캡스톤 단위로 관리합니다.
+# 후속 Day 에서 만들 모든 리소스는 이 Namespace 에 일관되게 배치됩니다.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rag-llm
+  labels:
+    purpose: capstone-rag-llm-serving
+    course: k8s-for-mle

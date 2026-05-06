@@ -1,0 +1,24 @@
+# Headless Service: clusterIP 를 None 으로 두어 StatefulSet 의 안정 DNS 를 발급합니다.
+#   - ordinal DNS:  qdrant-0.qdrant.rag-llm.svc.cluster.local  (Pod 단위 고정 주소)
+#   - 서비스 DNS:    qdrant.rag-llm.svc.cluster.local           (selector 매칭 Pod 들의 IP 목록)
+#
+# RAG API(후속 Day) 는 단일 endpoint 가 필요하므로 qdrant.rag-llm.svc:6333 을 호출하면 됩니다.
+# 향후 Qdrant 를 클러스터 모드(replicas > 1) 로 확장할 때 이 Headless Service 를 그대로 재사용합니다.
+#
+# 출처: course/phase-4-ml-on-k8s/04-argo-workflows/manifests/02-qdrant.yaml
+#       (ClusterIP → Headless 로 변환)
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: rag-llm
+  labels:
+    app: qdrant
+    component: vector-db
+spec:
+  clusterIP: None                                       # Headless: ordinal DNS 발급의 핵심 설정
+  selector:
+    app: qdrant
+  ports:
+    - { name: http, port: 6333, targetPort: http }
+    - { name: grpc, port: 6334, targetPort: grpc }

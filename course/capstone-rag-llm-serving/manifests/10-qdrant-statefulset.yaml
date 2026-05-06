@@ -1,0 +1,66 @@
+# 출처: course/phase-4-ml-on-k8s/04-argo-workflows/manifests/02-qdrant.yaml
+#       (Deployment + emptyDir → StatefulSet + volumeClaimTemplates 변환)
+#
+# 캡스톤 Day 1: 인덱스 영속화 + 안정 DNS + ordinal hostname 을 처음 도입합니다.
+# Phase 4-4 에서는 Argo Workflow 학습에 집중하기 위해 Deployment + emptyDir 로 띄웠지만,
+# 캡스톤은 인덱스를 Pod 재시작 후에도 유지해야 하므로 StatefulSet + PVC 로 운영합니다.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  namespace: rag-llm
+  labels:
+    app: qdrant
+    component: vector-db
+spec:
+  # serviceName 은 11-qdrant-service.yaml 의 Headless Service 이름과 정확히 같아야 합니다.
+  # 이 매칭이 있어야 qdrant-0.qdrant.rag-llm.svc.cluster.local 안정 DNS 가 발급됩니다.
+  serviceName: qdrant
+  replicas: 1                                          # Day 1: 단일 replica. 향후 Qdrant 클러스터링 시 증가.
+  selector:
+    matchLabels:
+      app: qdrant
+  template:
+    metadata:
+      labels:
+        app: qdrant
+        component: vector-db
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.11.3                 # Phase 4-4 와 동일 버전 고정
+          ports:
+            - { name: http, containerPort: 6333 }      # REST API: collections / search / upsert
+            - { name: grpc, containerPort: 6334 }      # gRPC (Day 1 미사용, 향후 RAG API 가 사용 가능)
+          # readinessProbe 는 /readyz 로 컬렉션 메타 로드 완료 시점부터 트래픽을 받도록 합니다.
+          # /healthz 와 분리하는 이유: 프로세스 살아있음(liveness) 과 요청 처리 가능(readiness) 은 다릅니다.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          # Day 1 학습용 소형 리소스. capstone-plan §11 비용 관리 원칙에 따라 작게 잡았습니다.
+          # 본 코스 자료 인덱싱(예상 1~2GB) 검색에는 충분하며, 부하 테스트(Day 9)에서 재조정합니다.
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          volumeMounts:
+            # /qdrant/storage 는 Qdrant 가 컬렉션·세그먼트를 저장하는 기본 경로입니다.
+            - { name: qdrant-storage, mountPath: /qdrant/storage }
+  # volumeClaimTemplates: StatefulSet 의 핵심. 각 Pod 마다 PVC 1 개를 자동 생성합니다.
+  # 생성되는 PVC 이름 규칙: <vct-name>-<sts-name>-<ordinal> → qdrant-storage-qdrant-0
+  # Pod 가 재시작/재스케줄되어도 같은 PVC 가 다시 마운트되므로 인덱스가 유지됩니다.
+  volumeClaimTemplates:
+    - metadata:
+        name: qdrant-storage
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        # GKE 기본 storageClass 는 'standard' 입니다.
+        # minikube 의 경우 'standard' 또는 'hostpath' 로 교체하세요 (kubectl get sc 로 확인).
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 5Gi                               # 본 코스 자료 인덱싱 1~2GB + 여유분

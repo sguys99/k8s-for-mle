@@ -46,14 +46,14 @@
 ### 4.1 루트 / 문서
 
 - [ ] `course/capstone-rag-llm-serving/README.md` — 프로젝트 개요 + 아키텍처 다이어그램 + 일정표 ★
-- [ ] `course/capstone-rag-llm-serving/lesson.md` — 시스템 설계 설명 (이론, 600~800줄) ★
-- [ ] `course/capstone-rag-llm-serving/docs/architecture.md` — 컴포넌트 분리 이유, 트레이드오프, 메트릭 표 ★
+- [~] `course/capstone-rag-llm-serving/lesson.md` — 시스템 설계 설명 (이론, 600~800줄) ★ _(Day 1: 13섹션 골격 + §0·§1·§4.1·§4.2 채움 / 나머지 TBD)_
+- [x] `course/capstone-rag-llm-serving/docs/architecture.md` — 컴포넌트 분리 이유, 트레이드오프, 메트릭 표 ★ _(Day 1 초안 7섹션)_
 
 ### 4.2 `manifests/` — Raw YAML (학습용, 번호 prefix로 적용 순서 명시)
 
-- [ ] `00-namespace.yaml` ★
-- [ ] `10-qdrant-statefulset.yaml` ← Phase 4-4 (namespace `argo` → `rag-llm`)
-- [ ] `11-qdrant-service.yaml` ←
+- [x] `00-namespace.yaml` ★
+- [x] `10-qdrant-statefulset.yaml` ← Phase 4-4 (Deployment+emptyDir → StatefulSet+volumeClaimTemplates 변환, namespace `ml-pipelines` → `rag-llm`)
+- [x] `11-qdrant-service.yaml` ← (ClusterIP → Headless `clusterIP: None` 변환)
 - [ ] `20-vllm-deployment.yaml` ← Phase 4-3 (namespace 변경, served-model-name 통일)
 - [ ] `21-vllm-pvc.yaml` ←
 - [ ] `22-vllm-service.yaml` ←
@@ -110,7 +110,7 @@
 ### 4.7 `labs/` — Day별 실습 가이드
 
 - [ ] `labs/README.md` — 인덱스 (Day별 링크, 사전 준비, 정리 절차) ★
-- [ ] `labs/day-01-namespace-qdrant.md` ★
+- [x] `labs/day-01-namespace-qdrant.md` ★
 - [ ] `labs/day-02-indexing-script-local.md` ★
 - [ ] `labs/day-03-indexing-argo.md` ★
 - [ ] `labs/day-04-vllm-deploy.md` ★
@@ -127,7 +127,7 @@
 
 | 캡스톤 산출물 | 재사용 원본 | 변경 사항 | 이식 완료 |
 |---------------|-------------|-----------|:---:|
-| `manifests/10-qdrant-statefulset.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/qdrant-statefulset.yaml` | namespace `argo` → `rag-llm`, replicas/PVC 크기 캡스톤 기준 명시 | [ ] |
+| `manifests/10-qdrant-statefulset.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/02-qdrant.yaml` | **Deployment+emptyDir → StatefulSet+volumeClaimTemplates 변환**, namespace `ml-pipelines` → `rag-llm`, PVC 5Gi, Headless Service 분리 | [x] |
 | `manifests/20-vllm-deployment.yaml` | `course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml` | namespace 변경, `--served-model-name` 통일 | [ ] |
 | `manifests/21-vllm-pvc.yaml`, `23-vllm-hf-secret.yaml`, `24-vllm-servicemonitor.yaml` | Phase 4-3 동명 파일 | namespace만 변경 | [ ] |
 | `manifests/50-indexing-workflow.yaml`, `51-indexing-cron.yaml` | Phase 4-4 동명 파일 | 입력 PVC 경로를 본 코스 자료로 교체, 출력 Qdrant URL 변경 | [ ] |
@@ -144,12 +144,12 @@
 
 작성 진행에 따라 섹션 단위로 체크.
 
-- [ ] §0 학습 목표 6개 (위 §3에서 인용)
-- [ ] §0 도입 — 왜 ML 엔지니어에게 필요한가 (1문단)
-- [ ] §1 시스템 아키텍처 (ASCII 다이어그램 + 컴포넌트별 역할표, 80~100줄)
+- [x] §0 학습 목표 6개 (위 §3에서 인용)
+- [x] §0 도입 — 왜 ML 엔지니어에게 필요한가 (1문단)
+- [x] §1 시스템 아키텍처 (ASCII 다이어그램 + 컴포넌트별 역할표, 80~100줄)
 - [ ] §2 왜 이렇게 분리했는가 (트레이드오프, 100줄)
 - [ ] §3 데이터 흐름 (`/chat` 호출 → retriever → 프롬프트 합성 → vLLM → 응답, 80줄)
-- [ ] §4 핵심 매니페스트 해설 (5종 핵심 라인 단위 주석, 150줄)
+- [~] §4 핵심 매니페스트 해설 (5종 핵심 라인 단위 주석, 150줄) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless 완료 / §4.3 vLLM·§4.4 RAG API·§4.5 Ingress TBD)_
 - [ ] §5 RAG API 구현 노트 (retriever 청크 추출, 컨텍스트 합성 규칙, 스트리밍 옵션, 80줄)
 - [ ] §6 모니터링 핵심 메트릭 (RAG / vLLM / Qdrant / GPU 4축, 60줄)
 - [ ] §7 HPA 커스텀 메트릭 (왜 CPU 기준이 부적절한가, prometheus-adapter 흐름, 60줄)
@@ -166,11 +166,11 @@
 각 `labs/day-NN-*.md`는 **Goal / 사전 조건 / Step / 검증 명령 / 정리** 5섹션 구조를 따릅니다. Day 단위로 매니페스트·코드·labs를 함께 추가합니다.
 
 ### Day 1 — Namespace + Qdrant + 아키텍처 초안
-- [ ] `manifests/00-namespace.yaml`
-- [ ] `manifests/10-qdrant-statefulset.yaml`, `11-qdrant-service.yaml` 이식
-- [ ] `docs/architecture.md` 초안
-- [ ] `labs/day-01-namespace-qdrant.md`
-- [ ] 검증: `curl qdrant:6333/healthz`, `kubectl get sts,pvc -n rag-llm`
+- [x] `manifests/00-namespace.yaml`
+- [x] `manifests/10-qdrant-statefulset.yaml`, `11-qdrant-service.yaml` 이식 _(Deployment+emptyDir → StatefulSet+PVC 변환)_
+- [x] `docs/architecture.md` 초안 _(7섹션)_
+- [x] `labs/day-01-namespace-qdrant.md` _(Goal/사전조건/Step 8단계/검증/정리/트러블슈팅)_
+- [ ] 검증: `curl qdrant:6333/healthz`, `kubectl get sts,pvc -n rag-llm` _(클러스터 실행 검증은 학습자 단계에서)_
 
 ### Day 2 — 인덱싱 스크립트 로컬
 - [ ] `practice/pipelines/indexing/{Dockerfile, requirements.txt, pipeline.py, README.md}`
@@ -363,4 +363,8 @@ gcloud container clusters delete capstone --zone us-central1-a --quiet
 
 > 캡스톤 작성을 진행하면서 결정/이슈/이식 시 발견한 차이점을 이 섹션에 누적합니다.
 
-- _(여기에 Day별 메모 추가)_
+- **2026-05-06 (Day 1)** — 이식 원본 차이 발견: `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/02-qdrant.yaml`은 **Deployment + emptyDir** 패턴이라 단순 namespace 치환이 아닌 **Deployment → StatefulSet, emptyDir → volumeClaimTemplates(PVC 5Gi)** 변환을 수행했습니다. 결과 매니페스트(`manifests/10-qdrant-statefulset.yaml`) 상단에 변환 사실을 출처 주석으로 명시했습니다.
+- **2026-05-06 (Day 1)** — Qdrant Service 형태를 Headless 1개(`clusterIP: None`)로 결정. StatefulSet 정석 패턴이며 향후 Qdrant 클러스터링(replicas > 1) 시 무수정으로 ordinal DNS(`qdrant-0.qdrant.rag-llm.svc...`)가 동작합니다. lesson.md §4.2 와 docs/architecture.md §3 에 결정 근거를 기록했습니다.
+- **2026-05-06 (Day 1)** — lesson.md 는 13섹션 헤딩 골격을 모두 배치하고 Day 1 관련 §0(학습목표 6개+도입)·§1(시스템 아키텍처 ASCII+역할표)·§4.1(Namespace)·§4.2(Qdrant StatefulSet+Headless)만 채웠습니다. 나머지 §2·§3·§4.3~§4.5·§5~§9·§11·§12 는 `<!-- TBD: Day N -->` 주석으로 자리표시 — 이후 Day 마다 누적 보강합니다.
+- **2026-05-06 (Day 1)** — `docs/architecture.md` 7섹션 초안 작성: §1 시스템 개요(시퀀스 ASCII), §2 컴포넌트 분리 표, §3 왜 StatefulSet인가(Day 1 핵심), §4 PVC 5Gi 산정 근거, §5 메트릭 표(예고), §6 Qdrant 대안 비교, §7 Day별 갱신 표. Day 2(데이터 흐름)→Day 4(vLLM)→Day 8(HPA) 시점에 보강 예정.
+- **2026-05-06 (Day 1)** — StatefulSet 이 캡스톤에서 **처음 본격 도입**됨을 인지하고, lesson.md §4.2 와 architecture.md §3 에 `serviceName ↔ Service.name` 매칭 규칙, `volumeClaimTemplates` 가 만드는 PVC 이름 규칙(`<vct>-<sts>-<ord>` → `qdrant-storage-qdrant-0`), Headless Service 의 `clusterIP: None` 의미를 모두 처음 설명했습니다. labs/day-01 §🚨 트러블슈팅 표에도 동일 항목 3건 반영.
