@@ -102,16 +102,18 @@
 
 ### 4.6 `practice/pipelines/indexing/` ← Phase 4-4 이식 + 데이터 교체
 
-- [ ] `Dockerfile`
-- [ ] `requirements.txt`
-- [ ] `pipeline.py` (load_docs / chunk / embed / upsert, BAAI/bge-small-en)
-- [ ] `README.md` ("본 코스 자료를 인덱싱한다" 설명)
+- [x] `Dockerfile` _(Day 2: COPY sample_docs/ 제거, ENV 4종 기본값(QDRANT_URL=http://qdrant.rag-llm.svc:6333 등))_
+- [x] `requirements.txt`
+- [x] `pipeline.py` _(Day 2: 4 subcommand + all + search 보조. 화이트리스트 글로브, 메타데이터 4종, MD-header+Recursive 2단계, e5 prefix, idempotent upsert)_
+- [x] `README.md` _(Day 2: 환경변수 표·실행 예·결정 노트 4건·트러블슈팅 표)_
+
+> **임베딩 모델 결정 (Day 2, 사용자 승인)**: 초안 표기 `BAAI/bge-small-en` → **`intfloat/multilingual-e5-small` (384 dim, 한국어 다수 자료 대응)** 으로 교체. 차원 동일 → §4 PVC 5Gi 산정·Qdrant VectorParams 무수정. 결정 근거는 [`../course/capstone-rag-llm-serving/docs/architecture.md`](../course/capstone-rag-llm-serving/docs/architecture.md) §3.5.3.
 
 ### 4.7 `labs/` — Day별 실습 가이드
 
 - [ ] `labs/README.md` — 인덱스 (Day별 링크, 사전 준비, 정리 절차) ★
 - [x] `labs/day-01-namespace-qdrant.md` ★
-- [ ] `labs/day-02-indexing-script-local.md` ★
+- [x] `labs/day-02-indexing-script-local.md` ★ _(Day 2: Goal/사전조건 6/Step 10/검증 체크리스트/정리/트러블슈팅 7항목)_
 - [ ] `labs/day-03-indexing-argo.md` ★
 - [ ] `labs/day-04-vllm-deploy.md` ★
 - [ ] `labs/day-05-rag-api-impl.md` ★
@@ -131,7 +133,7 @@
 | `manifests/20-vllm-deployment.yaml` | `course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml` | namespace 변경, `--served-model-name` 통일 | [ ] |
 | `manifests/21-vllm-pvc.yaml`, `23-vllm-hf-secret.yaml`, `24-vllm-servicemonitor.yaml` | Phase 4-3 동명 파일 | namespace만 변경 | [ ] |
 | `manifests/50-indexing-workflow.yaml`, `51-indexing-cron.yaml` | Phase 4-4 동명 파일 | 입력 PVC 경로를 본 코스 자료로 교체, 출력 Qdrant URL 변경 | [ ] |
-| `practice/pipelines/indexing/pipeline.py` | Phase 4-4 `practice/pipeline.py` | `sample_docs/` 대신 마운트된 코스 자료(`/data/course/*.md`) 인덱싱 | [ ] |
+| `practice/pipelines/indexing/pipeline.py` | Phase 4-4 `practice/rag_pipeline/pipeline.py` | (Day 2) 화이트리스트 재귀 글로브(`phase-*/**/lesson.md` + `capstone-*/lesson.md` + `study-roadmap.md`), 메타데이터 4종(source/phase/topic/heading) 보존, MD-header→Recursive 2단계 청킹, 모델 `intfloat/multilingual-e5-small` 로 교체 + e5 prefix, `recreate_collection` → `create_collection_if_not_exists + uuid5(point_id) + upsert` (idempotent), 보조 `all` / `search` subcommand 추가 | [x] |
 | `helm/templates/monitoring.yaml` | Phase 3 `02-prometheus-grafana` ServiceMonitor 패턴 | RAG API + vLLM + Qdrant 3종 통합 | [ ] |
 | `helm/templates/_helpers.tpl`, `Chart.yaml` 골격 | Phase 3 `01-helm-chart/helm/` | 차트 이름 / appVersion 변경 | [ ] |
 | `manifests/25-vllm-hpa.yaml` 커스텀 메트릭 부분 | Phase 3 `03-autoscaling-hpa` prometheus-adapter 설정 | 메트릭을 `vllm:num_requests_running`으로 변경 | [ ] |
@@ -148,14 +150,17 @@
 - [x] §0 도입 — 왜 ML 엔지니어에게 필요한가 (1문단)
 - [x] §1 시스템 아키텍처 (ASCII 다이어그램 + 컴포넌트별 역할표, 80~100줄)
 - [ ] §2 왜 이렇게 분리했는가 (트레이드오프, 100줄)
-- [ ] §3 데이터 흐름 (`/chat` 호출 → retriever → 프롬프트 합성 → vLLM → 응답, 80줄)
-- [~] §4 핵심 매니페스트 해설 (5종 핵심 라인 단위 주석, 150줄) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless 완료 / §4.3 vLLM·§4.4 RAG API·§4.5 Ingress TBD)_
+- [~] §3 데이터 흐름 — Day 2 시점에 **§3.1 챗봇 흐름(Day 5 채움) / §3.2 인덱싱 흐름(Day 2 작성 완료)** 2 서브섹션으로 분할
+  - [ ] §3.1 챗봇 호출 흐름 (`/chat` → 응답)
+  - [x] §3.2 인덱싱 데이터 흐름 (오프라인) — Day 2 작성 (4단계 ASCII 시퀀스 + 메타데이터 4종 보존 + 챗봇 경로와 분리 이유)
+- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless / Day 2: §4.6 인덱싱 파이프라인 신규 / §4.3 vLLM·§4.4 RAG API·§4.5 Ingress TBD)_
+  - [x] §4.6 인덱싱 파이프라인 (Day 2: subcommand 표 + 4 코드 발췌 + idempotent 결정 박스)
 - [ ] §5 RAG API 구현 노트 (retriever 청크 추출, 컨텍스트 합성 규칙, 스트리밍 옵션, 80줄)
 - [ ] §6 모니터링 핵심 메트릭 (RAG / vLLM / Qdrant / GPU 4축, 60줄)
 - [ ] §7 HPA 커스텀 메트릭 (왜 CPU 기준이 부적절한가, prometheus-adapter 흐름, 60줄)
 - [ ] §8 Helm으로 한 줄 배포 (values 분리(dev/prod), `helm install --create-namespace`, 50줄)
 - [ ] §9 검증 시나리오 (6단계, §9와 동일)
-- [ ] §10 🚨 자주 하는 실수 (3개, 30줄)
+- [~] §10 🚨 자주 하는 실수 _(Day 1: Qdrant/StatefulSet 3건 + Day 2: 인덱싱 3건 = 6건. 추후 Day 4 vLLM·Day 8 HPA 항목 추가 예정)_
 - [ ] §11 확장 아이디어 (reranker, 스트리밍, 멀티턴, RAGAS 평가, 30줄)
 - [ ] §12 다음 단계 링크 (Phase 5 또는 본인 업무 적용)
 
@@ -173,10 +178,11 @@
 - [ ] 검증: `curl qdrant:6333/healthz`, `kubectl get sts,pvc -n rag-llm` _(클러스터 실행 검증은 학습자 단계에서)_
 
 ### Day 2 — 인덱싱 스크립트 로컬
-- [ ] `practice/pipelines/indexing/{Dockerfile, requirements.txt, pipeline.py, README.md}`
-- [ ] 본 코스 자료(`course/phase-*/**/lesson.md`)를 청크/임베드/Qdrant upsert
-- [ ] `labs/day-02-indexing-script-local.md`
-- [ ] 검증: 컬렉션 count > 0, 샘플 검색 한 건 성공
+- [x] `practice/pipelines/indexing/{Dockerfile, requirements.txt, pipeline.py, README.md}` _(Phase 4-4 4-subcommand 골격 이식 + 6개 변경점 적용)_
+- [x] 본 코스 자료(`course/phase-*/**/lesson.md` + `docs/study-roadmap.md`) 화이트리스트 인덱싱 — 메타데이터 4종(source/phase/topic/heading) 보존
+- [x] `labs/day-02-indexing-script-local.md` _(Goal/사전조건/Step 10단계/검증/정리/트러블슈팅 7항목)_
+- [x] lesson.md §3.2 + §4.6 + §10 (실수 3건) 보강, architecture.md §1+§3.5+§4+§7 갱신
+- [ ] 검증: 학습자 단계 — `points_count > 0` (예상 500~800), `python pipeline.py search` 결과 top1 의 `payload.source` 가 본 코스 파일
 
 ### Day 3 — Argo Workflow로 인덱싱
 - [ ] `manifests/50-indexing-workflow.yaml`, `51-indexing-cron.yaml` 이식
@@ -238,8 +244,8 @@
 
 본 계획 진행과 함께 [course-plan.md](course-plan.md)의 다음 체크박스를 동기화합니다.
 
-- [ ] Day 1 — 아키텍처 문서 작성 + Namespace + Qdrant StatefulSet
-- [ ] Day 2 — 임베딩·인덱싱 스크립트 작성, 로컬 테스트
+- [x] Day 1 — 아키텍처 문서 작성 + Namespace + Qdrant StatefulSet (2026-05-06)
+- [x] Day 2 — 임베딩·인덱싱 스크립트 작성, 로컬 테스트 (2026-05-06)
 - [ ] Day 3 — 인덱싱 Argo Workflow 클러스터 실행
 - [ ] Day 4 — vLLM Deployment + OpenAI 호환 API 호출 검증
 - [ ] Day 5 — RAG API 구현 (retriever + LLM 결합)
@@ -251,9 +257,9 @@
 
 산출물 4종 관점 체크 (캡스톤은 단일 토픽이지만 4종을 만족해야 함):
 
-- [ ] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성
-- [ ] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines)
-- [ ] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개)
+- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건 추가))_
+- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건)_
+- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2 작성 완료, README 와 day-03~day-10 미작성)_
 - [ ] **GPU 클러스터 검증** — Day 10 통합 검증 + GKE 클러스터 삭제 로그
 
 ---
@@ -368,3 +374,8 @@ gcloud container clusters delete capstone --zone us-central1-a --quiet
 - **2026-05-06 (Day 1)** — lesson.md 는 13섹션 헤딩 골격을 모두 배치하고 Day 1 관련 §0(학습목표 6개+도입)·§1(시스템 아키텍처 ASCII+역할표)·§4.1(Namespace)·§4.2(Qdrant StatefulSet+Headless)만 채웠습니다. 나머지 §2·§3·§4.3~§4.5·§5~§9·§11·§12 는 `<!-- TBD: Day N -->` 주석으로 자리표시 — 이후 Day 마다 누적 보강합니다.
 - **2026-05-06 (Day 1)** — `docs/architecture.md` 7섹션 초안 작성: §1 시스템 개요(시퀀스 ASCII), §2 컴포넌트 분리 표, §3 왜 StatefulSet인가(Day 1 핵심), §4 PVC 5Gi 산정 근거, §5 메트릭 표(예고), §6 Qdrant 대안 비교, §7 Day별 갱신 표. Day 2(데이터 흐름)→Day 4(vLLM)→Day 8(HPA) 시점에 보강 예정.
 - **2026-05-06 (Day 1)** — StatefulSet 이 캡스톤에서 **처음 본격 도입**됨을 인지하고, lesson.md §4.2 와 architecture.md §3 에 `serviceName ↔ Service.name` 매칭 규칙, `volumeClaimTemplates` 가 만드는 PVC 이름 규칙(`<vct>-<sts>-<ord>` → `qdrant-storage-qdrant-0`), Headless Service 의 `clusterIP: None` 의미를 모두 처음 설명했습니다. labs/day-01 §🚨 트러블슈팅 표에도 동일 항목 3건 반영.
+- **2026-05-06 (Day 2)** — **임베딩 모델 교체 결정 (사용자 승인)**: 본 plan §4.6 초안 `BAAI/bge-small-en` → `intfloat/multilingual-e5-small` (둘 다 384 dim). 본 코스 자료가 한국어 다수라 영어 전용 모델로는 retrieval recall 부족. 차원 동일 → architecture.md §4 PVC 5Gi 산정값과 Qdrant `VectorParams.size` 무수정으로 호환. e5 계열 prefix(`passage:`/`query:`) 규약 준수를 위해 `pipeline.py` 의 `_E5_PASSAGE_PREFIX`/`_E5_QUERY_PREFIX` 상수와 `_is_e5_model()` 분기 추가. capstone-plan §4.6 + architecture.md §3.5.3·§4 동기화.
+- **2026-05-06 (Day 2)** — **port-forward 패턴 채택**: 로컬 Python 스크립트 → 클러스터 Qdrant 접근에 `kubectl port-forward -n rag-llm svc/qdrant 6333:6333` 사용 (Day 1 의 Headless Service 도 port-forward 가능 — Endpoints 중 1 Pod 으로 자동 연결). Day 3 컨테이너 실행으로 전환 시 `QDRANT_URL` 환경변수만 `http://qdrant.rag-llm.svc:6333` 로 변경하면 코드 수정 불필요. labs/day-02 Step 2/Step 10 + README 환경변수 표에 명시.
+- **2026-05-06 (Day 2)** — **idempotent upsert 트레이드오프**: Phase 4-4 의 `recreate_collection` (매 실행마다 비우기) → `create_collection_if_not_exists + uuid5(NAMESPACE_URL, chunk_id) + upsert` 로 전환. 운영 시 무중단 재인덱싱 + 부분 갱신 가능. 차원 불일치만 명시적 에러로 처리. lesson.md §4.6.5 결정 박스 + §10 자주 하는 실수 ⑥번. Day 3 Argo Workflow / CronWorkflow 설계 시 본 패턴이 이어집니다.
+- **2026-05-06 (Day 2)** — **lesson.md §3 분할 결정**: 캡스톤 plan §6 의 단일 §3(데이터 흐름)은 챗봇 호출 흐름만 가정했으나, 캡스톤은 인덱싱(오프라인 배치) 와 챗봇(온라인 동기) 두 흐름이 분리 운영되므로 §3 을 §3.1 (챗봇 — Day 5 채움) + §3.2 (인덱싱 — Day 2 작성 완료) 로 분할. 본 plan §6 의 섹션 표도 함께 갱신.
+- **2026-05-06 (Day 2)** — **청크 메타데이터 4 종(`source/phase/topic/heading`) 도입**: Day 5/6 의 RAG API 가 응답 `sources` 항목에 그대로 노출할 출처 라벨. 인덱싱 시점에 부여하지 않으면 검색 후 파일 역추적이 필요해 latency 가 늘어남. 청킹 1 차에 `MarkdownHeaderTextSplitter(strip_headers=False)` 로 h1/h2/h3 보존 후 ` > ` 로 연결한 헤딩 경로(`Phase 4 > vLLM > startupProbe`) 형식. architecture.md §3.5.1·§3.5.2 에 결정 근거.

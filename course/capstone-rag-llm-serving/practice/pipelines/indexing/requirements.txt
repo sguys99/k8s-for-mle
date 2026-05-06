@@ -1,0 +1,8 @@
+# 캡스톤 인덱싱 파이프라인 의존성
+# - 출처: course/phase-4-ml-on-k8s/04-argo-workflows/practice/rag_pipeline/requirements.txt
+# - 변경: Markdown header splitter 사용을 위해 langchain-text-splitters 그대로 유지(같은 패키지에 포함)
+#         임베딩 모델은 sentence-transformers 만으로 multilingual-e5-small 로드 가능 — 추가 패키지 불필요
+
+sentence-transformers==3.1.1
+qdrant-client==1.12.0
+langchain-text-splitters==0.3.0

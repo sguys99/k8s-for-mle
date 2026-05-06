@@ -148,7 +148,7 @@
 > 캡스톤은 study-roadmap의 권장 일정(10일) 흐름을 따릅니다. 일차별 작업이 곧 산출물 단위입니다.
 
 - [x] **Day 1** — 아키텍처 문서 작성 + Namespace + Qdrant StatefulSet _(2026-05-06: lesson.md 골격 + architecture.md 초안 7섹션 + manifests 3종 + labs/day-01 작성. 클러스터 실행 검증은 학습자 단계.)_
-- [ ] **Day 2** — 임베딩·인덱싱 스크립트 작성, 로컬 테스트
+- [x] **Day 2** — 임베딩·인덱싱 스크립트 작성, 로컬 테스트 _(2026-05-06: practice/pipelines/indexing/ 4건(Dockerfile/requirements/pipeline.py/README) + labs/day-02 + lesson.md §3.2·§4.6·§10 + architecture.md §3.5. 임베딩 모델은 한국어 자료 대응 위해 multilingual-e5-small 로 결정. 학습자 단계 검증(points_count, search 결과)은 GKE 클러스터에서.)_
 - [ ] **Day 3** — 인덱싱 Argo Workflow 클러스터 실행
 - [ ] **Day 4** — vLLM Deployment + OpenAI 호환 API 호출 검증
 - [ ] **Day 5** — RAG API 구현 (retriever + LLM 결합)
