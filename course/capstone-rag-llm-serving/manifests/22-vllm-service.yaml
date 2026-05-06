@@ -1,0 +1,32 @@
+# 출처: course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-service.yaml
+#
+# 캡스톤 Day 4 — vLLM Pod 앞에 붙는 ClusterIP Service. Phase 4-3 원본 대비 4 가지 변경:
+#   ① namespace: rag-llm 추가
+#   ② labels 캡스톤 컨벤션 통일 — app=vllm, component=llm-serving
+#   ③ name vllm-phi2 → vllm
+#      → 클러스터 내부 DNS vllm.rag-llm.svc.cluster.local:8000 가 모델 교체와 무관한 안정 endpoint
+#      → Day 5/6 RAG API 의 OPENAI_BASE_URL env 가 이 DNS 를 그대로 사용
+#   ④ selector app=vllm-phi2 → app=vllm (Deployment 의 라벨 변경과 일관)
+#
+# 외부 접근(호스트 머신 → 클러스터) 은 본 Day 에서 kubectl port-forward 로 단순화:
+#   kubectl port-forward -n rag-llm svc/vllm 8000:8000
+# Day 6 의 nginx-ingress 가 이 Service 를 *내부 호출 대상* 으로만 사용 — vLLM 은 외부 직접 노출 X.
+# 외부 노출은 RAG API (/chat) 만 담당하고 vLLM 은 클러스터 내부 호출만 받는 것이 보안/단순성 측면에서 자연스럽습니다.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  namespace: rag-llm
+  labels:
+    app: vllm
+    component: llm-serving
+spec:
+  type: ClusterIP                                       # 클러스터 내부 + port-forward 용. Day 6 Ingress 는 RAG API 만 노출.
+  selector:
+    app: vllm                                           # Deployment 의 template.metadata.labels.app 와 매칭
+  ports:
+    - name: http                                        # ServiceMonitor(Day 7) 의 port: http 와 이름 일치 필요
+      port: 8000                                        # 클러스터 내부 호출 포트
+      targetPort: http                                  # Deployment 의 ports.name=http 참조 — 컨테이너 포트 변경 시 추적 쉬움
+      protocol: TCP

@@ -1,0 +1,129 @@
+# 출처: course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml
+#
+# 캡스톤 Day 4 — Phase 4-3 의 vLLM Deployment 매니페스트를 본 캡스톤 컨텍스트로 이식합니다.
+# Phase 4-3 원본 대비 6 가지 변경:
+#   ① namespace: rag-llm 추가 (Day 1 의 00-namespace.yaml 과 일관)
+#   ② labels 캡스톤 컨벤션 통일 — app=vllm, component=llm-serving
+#                                    (Phase 4-3 의 app=vllm-phi2 / phase=4 / topic=03-vllm-llm-serving 제거)
+#   ③ Deployment / Service / PVC 이름 vllm-phi2 → vllm 으로 단순화
+#      → Service DNS vllm.rag-llm.svc.cluster.local:8000 가 모델 교체와 무관한 안정 endpoint
+#      → 모델 종속성은 --served-model-name 한 곳으로만 격리 (lesson.md §4.3 결정 ①)
+#   ④ args 에 --served-model-name=microsoft/phi-2 추가
+#      → Day 5/6 RAG API 가 호출할 모델 ID 를 명시적으로 고정 (lesson.md §4.3 결정 ②)
+#   ⑤ PVC 이름 vllm-phi2-cache → vllm-model-cache
+#   ⑥ 모니터링/HPA 관련 라벨(release=kube-prometheus-stack 등) 제거
+#      → ServiceMonitor 는 Day 7, HPA 는 Day 8 에 별도 매니페스트로 추가 예정
+#
+# 본 매니페스트의 vLLM 본질 학습(PagedAttention / continuous batching / KV cache / startupProbe / /dev/shm)
+# 은 Phase 4-3 lesson.md §1-1 ~ §1-6 에서 이미 다뤘으므로, 본 캡스톤은 *그 결과물을 RAG 시스템에 끼워 넣는*
+# 운영 결정에 집중합니다 — lesson.md §4.3 결정 박스 4 개 참조.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: rag-llm
+  labels:
+    app: vllm
+    component: llm-serving
+spec:
+  replicas: 1                              # vLLM 은 GPU 1 장 = 1 Pod 가 표준. Day 8 HPA 에서 GPU 노드 수와 함께 증가.
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+        component: llm-serving
+    spec:
+      # ── GPU 노드 격리 3 종 (Phase 4/01 패턴 그대로 재사용) ──
+      # GKE T4 노드 풀(Day 4 Step 1 에서 추가) 만 vLLM Pod 를 허용. 일반 CPU 노드(Qdrant/Argo) 와 분리.
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-tesla-t4
+      tolerations:
+        # GKE T4 노드 풀 생성 시 --node-taints=nvidia.com/gpu=present:NoSchedule 가 부여하는 taint 를 통과.
+        # taint 누락 시 vLLM Pod 가 일반 CPU 노드에 schedule 되어 CrashLoopBackOff (자주 하는 실수 ⑩).
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: vllm
+          # 운영 시 latest 대신 버전 핀. 0.6.x 부터 OpenAI 호환 API 의 chat-template 처리가 안정화.
+          image: vllm/vllm-openai:v0.6.6.post1
+          imagePullPolicy: IfNotPresent
+          # ── vLLM 핵심 args 6 종 (Phase 4-3 의 5 종 + --served-model-name) ──
+          # vLLM 컨테이너의 ENTRYPOINT 가 `python -m vllm.entrypoints.openai.api_server` 이고,
+          # args 가 그 서버의 옵션이 됩니다. `vllm/vllm-openai:v0.6.6.post1` 컨테이너에서 `--help` 로 전체 목록 확인 가능.
+          args:
+            - --model=microsoft/phi-2                  # ① HF Hub 모델 ID. 첫 로드 시 자동 다운로드 (5~10 분).
+            - --served-model-name=microsoft/phi-2      # ② OpenAI SDK 의 model 파라미터 값. Day 5/6 RAG API 의 OPENAI_MODEL env 와 일치 필요.
+            - --gpu-memory-utilization=0.85            # ③ GPU VRAM 의 85% 까지 사용. 0.95+ 면 OOM 위험 (Phase 4-3 자주 하는 실수 3번).
+            - --max-model-len=2048                     # ④ phi-2 의 학습 시 max context. 늘릴 수 없음.
+            - --port=8000                              # ⑤ HTTP 서버 포트. Service targetPort 와 일치.
+            - --dtype=auto                             # ⑥ T4 자동으로 FP16 선택. T4 는 BF16 미지원이므로 auto 가 안전.
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            # HF 토큰 (gated 모델용). phi-2 는 public 이라 optional: true — Secret 이 없어도 Pod 기동 정상.
+            # gated 모델(meta-llama/Llama-3.x-Instruct 등) 로 교체 시 23-vllm-hf-secret.yaml 적용 + 본인 토큰 입력 필수.
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: HF_TOKEN
+                  optional: true
+            # vLLM 0.6+ 는 모델 캐시 위치를 HF 표준 환경변수로 받습니다.
+            - name: HF_HOME
+              value: /root/.cache/huggingface
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"                            # 모델 다운로드/언팩 중 일시적으로 호스트 RAM 5GB+ 사용
+              # ── GPU 자원 ── extended resource — 정수만 / requests = limits 필수.
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "4"
+              memory: "16Gi"                           # GPU 메모리와 별개의 호스트 RAM 상한.
+              nvidia.com/gpu: 1
+          # ── 3 종 Probe ──
+          # 첫 기동: 모델 다운로드(5~10 분) + GPU 메모리 로드(30~60 초) + KV cache 할당(수 초) ≈ 5~10 분.
+          # startupProbe 가 통과할 때까지 livenessProbe 가 시작되지 않도록 K8s 가 보호 → 무한 재시작 방지.
+          startupProbe:
+            httpGet:
+              path: /health                            # vLLM OpenAI 서버의 표준 헬스 엔드포인트
+              port: http
+            failureThreshold: 60                       # 60 × 10s = 최대 10 분 모델 로딩 허용. 다운로드가 5GB+ 라 부족하면 90 으로 상향.
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            # 모델 캐시 PVC — 첫 다운로드 후 Pod 재기동 시 30 초 안에 ready (rolling update 가용성에 직결).
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+            # CUDA IPC 가 사용하는 공유 메모리. 컨테이너 기본 64MB 로는 vLLM worker 통신이 막힘
+            # (Phase 4-3 자주 하는 실수 2번). 4Gi tmpfs 로 확장.
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-model-cache                # 21-vllm-pvc.yaml 의 PVC name 과 일치.
+        - name: shm
+          emptyDir:
+            medium: Memory                             # tmpfs — 디스크가 아닌 RAM 에 잡힘
+            sizeLimit: 4Gi                             # phi-2 단일 모델 기준 충분. 7B+ / tensor-parallel 사용 시 8Gi+ 로.
+      terminationGracePeriodSeconds: 60                # vLLM 종료 시 KV cache flush + 진행 중 요청 마감 시간 확보.

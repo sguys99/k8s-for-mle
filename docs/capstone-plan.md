@@ -55,10 +55,10 @@
 - [x] `10-qdrant-statefulset.yaml` ← Phase 4-4 (Deployment+emptyDir → StatefulSet+volumeClaimTemplates 변환, namespace `ml-pipelines` → `rag-llm`)
 - [x] `11-qdrant-service.yaml` ← (ClusterIP → Headless `clusterIP: None` 변환)
 - [x] `49-argo-rbac.yaml` ★ Day 3 ← Phase 4-4 (namespace `ml-pipelines` → `rag-llm`, Workflow Pod ServiceAccount + Role + RoleBinding)
-- [ ] `20-vllm-deployment.yaml` ← Phase 4-3 (namespace 변경, served-model-name 통일)
-- [ ] `21-vllm-pvc.yaml` ←
-- [ ] `22-vllm-service.yaml` ←
-- [ ] `23-vllm-hf-secret.yaml` ←
+- [x] `20-vllm-deployment.yaml` ← Phase 4-3 (Day 4: namespace `rag-llm`, 라벨 캡스톤 컨벤션, 이름 `vllm-phi2` → `vllm`, PVC 이름 `vllm-model-cache`, args 6 종에 `--served-model-name=microsoft/phi-2` 추가, 모니터링/HPA 라벨 제거)
+- [x] `21-vllm-pvc.yaml` ← (Day 4: namespace + 라벨 + 이름 `vllm-model-cache`)
+- [x] `22-vllm-service.yaml` ← (Day 4: namespace + 라벨 + 이름 `vllm` + selector `app=vllm`)
+- [x] `23-vllm-hf-secret.yaml` ← (Day 4: namespace + 라벨 + 주석 보강 — phi-2 public 이라 옵션 처리)
 - [ ] `24-vllm-servicemonitor.yaml` ←
 - [ ] `25-vllm-hpa.yaml` ★ (prometheus-adapter + `vllm:num_requests_running`)
 - [ ] `30-rag-api-deployment.yaml` ★
@@ -116,7 +116,7 @@
 - [x] `labs/day-01-namespace-qdrant.md` ★
 - [x] `labs/day-02-indexing-script-local.md` ★ _(Day 2: Goal/사전조건 6/Step 10/검증 체크리스트/정리/트러블슈팅 7항목)_
 - [x] `labs/day-03-indexing-argo.md` ★ _(Day 3: Goal 5/사전조건 6/Step 8/검증 체크리스트 8/정리/트러블슈팅 7항목)_
-- [ ] `labs/day-04-vllm-deploy.md` ★
+- [x] `labs/day-04-vllm-deploy.md` ★ _(Day 4: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 5 분기/트러블슈팅 11항목)_
 - [ ] `labs/day-05-rag-api-impl.md` ★
 - [ ] `labs/day-06-rag-api-deploy.md` ★
 - [ ] `labs/day-07-config-secret-monitoring.md` ★
@@ -131,8 +131,9 @@
 | 캡스톤 산출물 | 재사용 원본 | 변경 사항 | 이식 완료 |
 |---------------|-------------|-----------|:---:|
 | `manifests/10-qdrant-statefulset.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/02-qdrant.yaml` | **Deployment+emptyDir → StatefulSet+volumeClaimTemplates 변환**, namespace `ml-pipelines` → `rag-llm`, PVC 5Gi, Headless Service 분리 | [x] |
-| `manifests/20-vllm-deployment.yaml` | `course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml` | namespace 변경, `--served-model-name` 통일 | [ ] |
-| `manifests/21-vllm-pvc.yaml`, `23-vllm-hf-secret.yaml`, `24-vllm-servicemonitor.yaml` | Phase 4-3 동명 파일 | namespace만 변경 | [ ] |
+| `manifests/20-vllm-deployment.yaml` | `course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml` | (Day 4) 6 가지 변경: namespace `rag-llm`, 라벨 캡스톤 컨벤션(`app=vllm`/`component=llm-serving`), 이름 `vllm-phi2` → `vllm`, PVC 이름 `vllm-phi2-cache` → `vllm-model-cache`, **args 에 `--served-model-name=microsoft/phi-2` 추가**, 모니터링/HPA 라벨 제거 | [x] |
+| `manifests/21-vllm-pvc.yaml`, `22-vllm-service.yaml`, `23-vllm-hf-secret.yaml` | Phase 4-3 동명 파일 | (Day 4) namespace + 라벨 + 이름(vllm-phi2 → vllm 일관) 변경 | [x] |
+| `manifests/24-vllm-servicemonitor.yaml` | Phase 4-3 동명 파일 | (Day 7 예정) namespace + 라벨 + selector `app=vllm` 일관 | [ ] |
 | `manifests/49-argo-rbac.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/01-argo-rbac.yaml` | (Day 3) namespace `ml-pipelines` → `rag-llm` 변경, ServiceAccount 이름 `workflow` 유지, Role 권한(`pods`/`pods/log`/`workflowtaskresults`) 동일 | [x] |
 | `manifests/50-indexing-workflow.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/20-rag-indexing-workflow.yaml` | (Day 3) 5가지 변경: namespace, **git-clone step 1개 신규 추가**(5-step DAG), 이미지 `rag-pipeline:0.1.0` → `docker.io/<user>/rag-indexer:0.1.0`, env 6종 주입(DOCS_ROOT/ROADMAP_PATH/QDRANT_URL/PIPELINE_DATA_DIR/EMBED_MODEL/QDRANT_COLLECTION), volumeClaimTemplate 1개로 `/docs`+`/data` 통합 마운트 | [x] |
 | `manifests/51-indexing-cronworkflow.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/30-rag-indexing-cron.yaml` | (Day 3) namespace 변경, workflowSpec 본문을 50과 동기화, embedding-model 기본값 `intfloat/multilingual-e5-small` (Day 2 결정 인용), schedule `0 3 * * *` Asia/Seoul + concurrencyPolicy: Replace 유지 | [x] |
@@ -152,12 +153,13 @@
 - [x] §0 학습 목표 6개 (위 §3에서 인용)
 - [x] §0 도입 — 왜 ML 엔지니어에게 필요한가 (1문단)
 - [x] §1 시스템 아키텍처 (ASCII 다이어그램 + 컴포넌트별 역할표, 80~100줄)
-- [ ] §2 왜 이렇게 분리했는가 (트레이드오프, 100줄)
+- [~] §2 왜 이렇게 분리했는가 (트레이드오프, 100줄) _(Day 4: §2 도입 + §2.1 vLLM 분리 4 축 + §2.2/§2.4 한 줄 인용 / §2.3 RAG API 분리는 Day 5~6 TBD)_
 - [~] §3 데이터 흐름 — Day 3 시점에 **§3.1 챗봇 흐름(Day 5 채움) / §3.2 인덱싱 흐름(Day 2 완료) / §3.3 인덱싱 Workflow DAG(Day 3 완료)** 3 서브섹션으로 확장
   - [ ] §3.1 챗봇 호출 흐름 (`/chat` → 응답)
   - [x] §3.2 인덱싱 데이터 흐름 (오프라인) — Day 2 작성 (4단계 ASCII 시퀀스 + 메타데이터 4종 보존 + 챗봇 경로와 분리 이유)
   - [x] §3.3 인덱싱 Workflow DAG (Day 3 — 클러스터 위 자동화) — 5-step DAG ASCII + Day 2↔Day 3 매핑 표 + git-clone 첫 step 결정 근거 + port-forward 차이
-- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless / Day 2: §4.6 인덱싱 파이프라인 / Day 3: §4.7 Argo Workflow + CronWorkflow / §4.3 vLLM·§4.4 RAG API·§4.5 Ingress TBD)_
+- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless / Day 2: §4.6 인덱싱 파이프라인 / Day 3: §4.7 Argo Workflow + CronWorkflow / Day 4: §4.3 vLLM Deployment / §4.4 RAG API·§4.5 Ingress TBD)_
+  - [x] §4.3 vLLM Deployment (Day 4: 매니페스트 4 종 표 + args 6 종 발췌 + GPU 격리 3 종 발췌 + startupProbe 발췌 + volumes 발췌 + 결정 박스 4개(이름 통일, served-model-name, GPU 노드 풀 분리, HF Secret 옵션) + Day 4 추가 컴포넌트 표)
   - [x] §4.6 인덱싱 파이프라인 (Day 2: subcommand 표 + 4 코드 발췌 + idempotent 결정 박스)
   - [x] §4.7 Argo Workflow / CronWorkflow (Day 3: 매니페스트 3개 표 + 핵심 구조 발췌 + 결정 박스 4개(Workflow vs Job, volumeClaimTemplate 통합 마운트, namespace 분리+RBAC, CronWorkflow concurrencyPolicy+WorkflowTemplate 미도입) + Day 3 추가 컴포넌트 표)
 - [ ] §5 RAG API 구현 노트 (retriever 청크 추출, 컨텍스트 합성 규칙, 스트리밍 옵션, 80줄)
@@ -165,7 +167,7 @@
 - [ ] §7 HPA 커스텀 메트릭 (왜 CPU 기준이 부적절한가, prometheus-adapter 흐름, 60줄)
 - [ ] §8 Helm으로 한 줄 배포 (values 분리(dev/prod), `helm install --create-namespace`, 50줄)
 - [ ] §9 검증 시나리오 (6단계, §9와 동일)
-- [~] §10 🚨 자주 하는 실수 _(Day 1: Qdrant/StatefulSet 3건 + Day 2: 인덱싱 3건 + Day 3: Argo/RBAC 3건 = 9건. 추후 Day 4 vLLM·Day 8 HPA 항목 추가 예정)_
+- [~] §10 🚨 자주 하는 실수 _(Day 1: Qdrant/StatefulSet 3건 + Day 2: 인덱싱 3건 + Day 3: Argo/RBAC 3건 + Day 4: vLLM/GPU 3건(노드 풀 taint 누락·served-model-name 불일치·PVC 모델 캐시 누적) = 12건. 추후 Day 7 ServiceMonitor·Day 8 HPA·Day 9 부하 OOM 항목 추가 예정)_
 - [ ] §11 확장 아이디어 (reranker, 스트리밍, 멀티턴, RAGAS 평가, 30줄)
 - [ ] §12 다음 단계 링크 (Phase 5 또는 본인 업무 적용)
 
@@ -200,10 +202,11 @@
 - [ ] 검증: 학습자 단계 — Argo controller 설치 + RBAC 적용 + 이미지 빌드/푸시 + Workflow Succeeded + CronWorkflow `0 3 * * *` 표시 + 수동 트리거 + Day 2 와 동일 `points_count`
 
 ### Day 4 — vLLM Deployment
-- [ ] `manifests/20-vllm-deployment.yaml`, `21-vllm-pvc.yaml`, `22-vllm-service.yaml`, `23-vllm-hf-secret.yaml` 이식
-- [ ] HF Secret 생성 → vLLM Deployment 적용 → `/v1/models`로 모델 인지 확인
-- [ ] `labs/day-04-vllm-deploy.md`
-- [ ] 검증: OpenAI 클라이언트 호출 200 OK + 응답 텍스트
+- [x] `manifests/20-vllm-deployment.yaml`, `21-vllm-pvc.yaml`, `22-vllm-service.yaml`, `23-vllm-hf-secret.yaml` 이식 (Phase 4-3 4 매니페스트 + 6 가지 변경)
+- [x] `labs/day-04-vllm-deploy.md` (Goal 4/사전조건 6/Step 9/검증 8/정리 5 분기/트러블슈팅 11)
+- [x] lesson.md §1.1 다이어그램(★ Day 4 ★ 마커) + §2.1 신규(vLLM 분리 4 축) + §4.3 신규(매니페스트 해설 + 결정 박스 4개) + §10 (실수 3건 추가, 총 12건), architecture.md §1 cold start 단락 + §3.8 신규(4 소절) + §7 갱신 + §부록 A Day 4 매니페스트 위치
+- [x] `labs/README.md` Day 4 행 ✅ + 작성 완료된 lab 리스트에 day-04 추가
+- [ ] 검증: 학습자 단계 — GKE T4 노드 풀 추가 → vLLM Pod Running + startupProbe 통과 → `curl /v1/models` 응답 `id="microsoft/phi-2"` → OpenAI Python SDK 호출 200 OK + 자연어 응답 → `kubectl rollout restart` 후 60 초 ready (PVC 캐시 효과) → GPU 노드 풀 size=0 축소
 
 ### Day 5 — RAG API 구현 (로컬)
 - [ ] `practice/rag_app/{Dockerfile, requirements.txt, main.py, retriever.py, llm_client.py, prompts.py}`
@@ -256,7 +259,7 @@
 - [x] Day 1 — 아키텍처 문서 작성 + Namespace + Qdrant StatefulSet (2026-05-06)
 - [x] Day 2 — 임베딩·인덱싱 스크립트 작성, 로컬 테스트 (2026-05-06)
 - [x] Day 3 — 인덱싱 Argo Workflow 클러스터 실행 (2026-05-06)
-- [ ] Day 4 — vLLM Deployment + OpenAI 호환 API 호출 검증
+- [x] Day 4 — vLLM Deployment + OpenAI 호환 API 호출 검증 (2026-05-07)
 - [ ] Day 5 — RAG API 구현 (retriever + LLM 결합)
 - [ ] Day 6 — RAG API Deployment + Service + Ingress
 - [ ] Day 7 — ConfigMap/Secret 분리, ServiceMonitor 추가
@@ -266,9 +269,9 @@
 
 산출물 4종 관점 체크 (캡스톤은 단일 토픽이지만 4종을 만족해야 함):
 
-- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건 추가) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건 추가, 총 9건))_
-- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건 추가(49·50·51) + practice/pipelines/indexing/README.md Day 3 단락 갱신)_
-- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3 작성 완료, README 신규 작성 완료, day-04~day-10 미작성)_
+- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건 추가) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건 추가, 총 9건) / Day 4: §1.1 ★ Day 4 ★ 마커·§2.1 vLLM 분리 4 축·§4.3 vLLM Deployment + 결정 박스 4개·§10 (3건 추가, 총 12건))_
+- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건 추가(49·50·51) + practice/pipelines/indexing/README.md Day 3 단락 갱신 / Day 4: manifests 4건 추가(20·21·22·23))_
+- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4 작성 완료, README 갱신 완료, day-05~day-10 미작성)_
 - [ ] **GPU 클러스터 검증** — Day 10 통합 검증 + GKE 클러스터 삭제 로그
 
 ---
@@ -394,3 +397,10 @@ gcloud container clusters delete capstone --zone us-central1-a --quiet
 - **2026-05-06 (Day 3)** — **단일 PVC 통합 마운트 (mountPath 2 개로 `/docs` + `/data`)**: 5 step 이 공유할 데이터를 별도 PVC 2 개로 나누면 RWO accessMode 노드 제약이 step 마다 두 번 발생. 단일 PVC 의 mountPath 2 개로 통합하면 step 들이 같은 노드에서 순차 실행 + volumeClaimGC 가 1 개만 정리. architecture.md §3.7 에 운영 한계(진짜 병렬화 시 RWX 필요, 다른 워크플로우 간 공유 시 객체 스토리지) 까지 정리. lesson.md §4.7 결정 박스 ② + §10 자주 하는 실수 ⑨번에서도 강조.
 - **2026-05-06 (Day 3)** — **namespace 분리: controller 는 `argo`, Workflow 는 `rag-llm`**: 두 namespace 를 같게 두면 RBAC 단순화되지만, 분리하면 캡스톤(`rag-llm`) 만 통째로 삭제할 때 controller 가 영향 받지 않음. 추가 비용은 RBAC 매니페스트 1 개(`49-argo-rbac.yaml`). Workflow Pod 가 자식 Pod 생성하려면 ServiceAccount `workflow` + Role(`pods`/`pods/log`/`workflowtaskresults`) + RoleBinding 필요. 누락하면 `pods is forbidden` 메시지 — Phase 4-4 자주 하는 실수 1번 + 캡스톤 lesson.md §10 자주 하는 실수 ⑦번 동일.
 - **2026-05-06 (Day 3)** — **CronWorkflow `concurrencyPolicy: Replace` 채택**: 3 옵션(Allow/Forbid/Replace) 중 Replace. Day 2 의 idempotent upsert 패턴(uuid5 결정론적 point ID + create_if_not_exists) 이 동일 자료 재실행을 안전하게 만들어 주므로 Replace(이전 취소 후 새로 시작) 가 자연스러움. Allow 는 동일 PVC 경합 위험, Forbid 는 자료 갱신 지연. lesson.md §4.7 결정 박스 ④에 명시.
+- **2026-05-07 (Day 4)** — **GPU 환경: 기존 `capstone` 클러스터에 T4 노드 풀 1 노드 추가 (사용자 승인)**: 본 plan §7 Day 4 의 사전 조건. 별도 GPU 클러스터 신규 생성은 RAG API → vLLM 호출이 클러스터 내부 DNS 한 줄로 끝나지 않아 단순성 저해. 단일 GPU 노드 풀(Qdrant/Argo 도 T4 노드에) 도 비용 비효율. 절충은 별도 GPU 노드 풀 + `nvidia.com/gpu=present:NoSchedule` taint 분리 — CPU 워크로드는 e2-medium, vLLM 만 T4. Day 4 종료 시 GPU 노드 풀만 size=0 으로 축소 가능 (5 분 안에 복원). architecture.md §3.8.3 표 형식으로 정리.
+- **2026-05-07 (Day 4)** — **이름 통일 결정: `vllm-phi2` → `vllm`**: Phase 4-3 의 Deployment / Service / PVC 이름이 모두 `vllm-phi2` 였습니다 — *모델명 종속* 이라 Day 9 모델 교체 시 매니페스트 + RAG API 의 `OPENAI_BASE_URL` env 까지 4 곳을 함께 변경해야 합니다. 캡스톤은 이름을 `vllm` (Service/Deployment) + `vllm-model-cache` (PVC) 로 단순화 — Service DNS `vllm.rag-llm.svc.cluster.local:8000` 가 모델 교체와 무관한 안정 endpoint. 모델 종속성은 `--served-model-name` 한 곳으로만 격리 (lesson.md §4.3 결정 박스 ①).
+- **2026-05-07 (Day 4)** — **`--served-model-name=microsoft/phi-2` 명시 결정 (사용자 승인 — HF ID 그대로)**: 3 옵션(HF ID 그대로 / 단축 `phi-2` / 논리명 `capstone-llm`) 중 HF ID. 학습자가 OpenAI SDK 호출(`model="microsoft/phi-2"`) 을 그대로 재현하는 것이 학습 흐름에 자연스러움. 운영적으로 가장 깔끔한 논리명(`capstone-llm`) 은 학습자가 *왜 capstone-llm 인지* 를 한 번 더 추론해야 하는 부담이 있어 캡스톤 학습 단계에서는 후순위. 향후 Phase 5 (멀티 클러스터/GitOps) 시점에 마이그레이션 — 그 때는 `--served-model-name` 한 줄 + RAG API env 한 줄 = 2 곳만 수정. architecture.md §3.8.4 표 형식으로 정리.
+- **2026-05-07 (Day 4)** — **HF Secret 옵션 처리**: phi-2 는 HuggingFace public 이라 토큰 없이 다운로드. Deployment 의 `valueFrom.secretKeyRef.optional: true` 가 Secret 부재를 정상 처리. 캡스톤 디폴트는 Secret 미적용. 토큰이 필요한 두 시나리오(rate limit / gated 모델) 만 학습자에게 안내. 학습용 매니페스트라 평문 placeholder 를 그대로 두고, 운영 시 SealedSecrets / External Secrets Operator 로 전환 권장 (lesson.md §4.3 결정 박스 ④).
+- **2026-05-07 (Day 4)** — **lesson.md §2 분할 결정**: 캡스톤 plan §6 의 §2(왜 이렇게 분리했는가) 를 Day 4 에서 vLLM 분리 4 축으로 본격 작성. §2.1 (vLLM 분리, Day 4 작성 완료) / §2.2 (인덱싱 분리, §3.6 한 줄 인용) / §2.3 (RAG API 분리, Day 5~6 TBD) / §2.4 (단일 Namespace, Day 1 §1.3 인용) 로 4 분할. 향후 Day 5/6 작성 시 §2.3 만 채우면 §2 완성.
+- **2026-05-07 (Day 4)** — **cold start 운영적 의미를 architecture.md §3.8.2 로 분리**: vLLM cold start 5~10 분이 *Pod 라이프사이클 한 번에 한 번* 만 발생하는 latency 임을 §1 시퀀스 본문 단락에 한 문단 추가. 더 깊은 결정 노트(rolling update 가용성, Day 6 Helm 차트 values 매핑) 는 §3.8.2 로. Day 6 Helm 차트 작성 시 `values-prod.yaml.replicas: 2` + PVC 캐시 + startupProbe 길이 3 가지가 함께 있어야 사용자 체감 다운타임 0 이라는 결정.
+- **2026-05-07 (Day 4)** — **자주 하는 실수 3 건 추가 (Day 4 — vLLM/GPU)**: ⑩ T4 노드 풀 taint 누락 (gcloud `--node-taints` 누락 시 vLLM Pod 가 CPU 노드에 schedule), ⑪ served-model-name 불일치 (Day 6 시점 발견되는 후속 문제 — Day 4 시점에 미리 강조), ⑫ 모델 캐시 PVC 디스크 누적 (Day 9 모델 교체 후 두 모델 캐시 누적). Phase 4-3 의 자주 하는 실수 1·2·3번(GPU 누락/`/dev/shm`/0.95+) 은 매니페스트가 *해결된 상태* 로 작성됐으므로 한 줄 링크로 처리 — 본 캡스톤에서 학습자가 처음부터 매니페스트를 작성할 때만 재현됨.

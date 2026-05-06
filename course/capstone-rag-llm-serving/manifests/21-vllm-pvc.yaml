@@ -1,0 +1,36 @@
+# 출처: course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-pvc.yaml
+#
+# 캡스톤 Day 4 — vLLM 모델 가중치 캐시용 PVC. Phase 4-3 원본 대비 3 가지 변경:
+#   ① namespace: rag-llm 추가
+#   ② labels 캡스톤 컨벤션 통일 — app=vllm, component=llm-serving
+#   ③ name vllm-phi2-cache → vllm-model-cache (모델 교체 시에도 같은 PVC 재사용)
+#
+# microsoft/phi-2 의 디스크 사용량 (참고치):
+#   - 모델 가중치 (FP16, safetensors)   : 약 5.4 GB
+#   - tokenizer / config / HF metadata  : 수십 MB
+#   - HF Hub 다운로드 임시 버퍼          : 모델 크기의 1~1.5 배 (다운로드 중 한시적)
+# 따라서 20Gi 면 phi-2 + 향후 Qwen2.5-1.5B-Instruct (3GB) 같은 SLM 으로 교체에도 여유가 있습니다.
+# 7B+ 모델로 교체 시에는 50Gi 로 상향 (lesson.md §4.3 결정 박스 ④ 후속 안내).
+#
+# ⚠ 본 PVC 는 RWO (vLLM 은 GPU 1 장당 Pod 1 개가 표준이라 RWO 면 충분).
+#   GPU 멀티 분산 운영(현 캡스톤 범위 밖) 시 RWX storageClass 로 검토.
+# ⚠ 본 PVC 는 Deployment 삭제 시 자동 삭제되지 않습니다 (데이터 보호).
+#   명시적으로 정리하려면: kubectl delete pvc vllm-model-cache -n rag-llm
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-model-cache
+  namespace: rag-llm
+  labels:
+    app: vllm
+    component: llm-serving
+spec:
+  accessModes:
+    - ReadWriteOnce                # vLLM Pod 은 GPU 1 장 = 1 Pod 표준 — RWO 충분
+  resources:
+    requests:
+      storage: 20Gi                # phi-2(2.7B) 기준. 7B+ 모델 교체 시 50Gi 로 상향.
+  # storageClassName 미지정 시 클러스터 default StorageClass 사용 (GKE=standard-rwo, minikube=standard).
+  # 캡스톤 GKE 기준 명시:
+  storageClassName: standard
