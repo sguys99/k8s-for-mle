@@ -54,6 +54,7 @@
 - [x] `00-namespace.yaml` ★
 - [x] `10-qdrant-statefulset.yaml` ← Phase 4-4 (Deployment+emptyDir → StatefulSet+volumeClaimTemplates 변환, namespace `ml-pipelines` → `rag-llm`)
 - [x] `11-qdrant-service.yaml` ← (ClusterIP → Headless `clusterIP: None` 변환)
+- [x] `49-argo-rbac.yaml` ★ Day 3 ← Phase 4-4 (namespace `ml-pipelines` → `rag-llm`, Workflow Pod ServiceAccount + Role + RoleBinding)
 - [ ] `20-vllm-deployment.yaml` ← Phase 4-3 (namespace 변경, served-model-name 통일)
 - [ ] `21-vllm-pvc.yaml` ←
 - [ ] `22-vllm-service.yaml` ←
@@ -67,8 +68,8 @@
 - [ ] `34-rag-api-servicemonitor.yaml` ★
 - [ ] `35-rag-api-hpa.yaml` ★ (RPS 기준)
 - [ ] `40-ingress.yaml` ★ (`/chat` 라우팅)
-- [ ] `50-indexing-workflow.yaml` ← Phase 4-4 (입력 PVC를 본 코스 자료로 교체)
-- [ ] `51-indexing-cron.yaml` ←
+- [x] `50-indexing-workflow.yaml` ← Phase 4-4 (Day 3: namespace 변경 + git-clone step 1개 신규 추가로 5-step DAG + 이미지 레지스트리 placeholder + env 6종 주입 + volumeClaimTemplate 통합 마운트)
+- [x] `51-indexing-cronworkflow.yaml` ← Phase 4-4 (Day 3: workflowSpec 본문을 50과 동기화, embedding-model 기본값 `intfloat/multilingual-e5-small` 로 갱신)
 
 ### 4.3 `helm/` — 차트 (한 줄 배포용) ★ 신규 일체
 
@@ -111,10 +112,10 @@
 
 ### 4.7 `labs/` — Day별 실습 가이드
 
-- [ ] `labs/README.md` — 인덱스 (Day별 링크, 사전 준비, 정리 절차) ★
+- [x] `labs/README.md` — 인덱스 (Day별 링크, 사전 준비, 정리 절차) ★ _(Day 3 작성: Day 1~3 완료 표기 + Day 4~10 예정 표기)_
 - [x] `labs/day-01-namespace-qdrant.md` ★
 - [x] `labs/day-02-indexing-script-local.md` ★ _(Day 2: Goal/사전조건 6/Step 10/검증 체크리스트/정리/트러블슈팅 7항목)_
-- [ ] `labs/day-03-indexing-argo.md` ★
+- [x] `labs/day-03-indexing-argo.md` ★ _(Day 3: Goal 5/사전조건 6/Step 8/검증 체크리스트 8/정리/트러블슈팅 7항목)_
 - [ ] `labs/day-04-vllm-deploy.md` ★
 - [ ] `labs/day-05-rag-api-impl.md` ★
 - [ ] `labs/day-06-rag-api-deploy.md` ★
@@ -132,7 +133,9 @@
 | `manifests/10-qdrant-statefulset.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/02-qdrant.yaml` | **Deployment+emptyDir → StatefulSet+volumeClaimTemplates 변환**, namespace `ml-pipelines` → `rag-llm`, PVC 5Gi, Headless Service 분리 | [x] |
 | `manifests/20-vllm-deployment.yaml` | `course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml` | namespace 변경, `--served-model-name` 통일 | [ ] |
 | `manifests/21-vllm-pvc.yaml`, `23-vllm-hf-secret.yaml`, `24-vllm-servicemonitor.yaml` | Phase 4-3 동명 파일 | namespace만 변경 | [ ] |
-| `manifests/50-indexing-workflow.yaml`, `51-indexing-cron.yaml` | Phase 4-4 동명 파일 | 입력 PVC 경로를 본 코스 자료로 교체, 출력 Qdrant URL 변경 | [ ] |
+| `manifests/49-argo-rbac.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/01-argo-rbac.yaml` | (Day 3) namespace `ml-pipelines` → `rag-llm` 변경, ServiceAccount 이름 `workflow` 유지, Role 권한(`pods`/`pods/log`/`workflowtaskresults`) 동일 | [x] |
+| `manifests/50-indexing-workflow.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/20-rag-indexing-workflow.yaml` | (Day 3) 5가지 변경: namespace, **git-clone step 1개 신규 추가**(5-step DAG), 이미지 `rag-pipeline:0.1.0` → `docker.io/<user>/rag-indexer:0.1.0`, env 6종 주입(DOCS_ROOT/ROADMAP_PATH/QDRANT_URL/PIPELINE_DATA_DIR/EMBED_MODEL/QDRANT_COLLECTION), volumeClaimTemplate 1개로 `/docs`+`/data` 통합 마운트 | [x] |
+| `manifests/51-indexing-cronworkflow.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/30-rag-indexing-cron.yaml` | (Day 3) namespace 변경, workflowSpec 본문을 50과 동기화, embedding-model 기본값 `intfloat/multilingual-e5-small` (Day 2 결정 인용), schedule `0 3 * * *` Asia/Seoul + concurrencyPolicy: Replace 유지 | [x] |
 | `practice/pipelines/indexing/pipeline.py` | Phase 4-4 `practice/rag_pipeline/pipeline.py` | (Day 2) 화이트리스트 재귀 글로브(`phase-*/**/lesson.md` + `capstone-*/lesson.md` + `study-roadmap.md`), 메타데이터 4종(source/phase/topic/heading) 보존, MD-header→Recursive 2단계 청킹, 모델 `intfloat/multilingual-e5-small` 로 교체 + e5 prefix, `recreate_collection` → `create_collection_if_not_exists + uuid5(point_id) + upsert` (idempotent), 보조 `all` / `search` subcommand 추가 | [x] |
 | `helm/templates/monitoring.yaml` | Phase 3 `02-prometheus-grafana` ServiceMonitor 패턴 | RAG API + vLLM + Qdrant 3종 통합 | [ ] |
 | `helm/templates/_helpers.tpl`, `Chart.yaml` 골격 | Phase 3 `01-helm-chart/helm/` | 차트 이름 / appVersion 변경 | [ ] |
@@ -150,17 +153,19 @@
 - [x] §0 도입 — 왜 ML 엔지니어에게 필요한가 (1문단)
 - [x] §1 시스템 아키텍처 (ASCII 다이어그램 + 컴포넌트별 역할표, 80~100줄)
 - [ ] §2 왜 이렇게 분리했는가 (트레이드오프, 100줄)
-- [~] §3 데이터 흐름 — Day 2 시점에 **§3.1 챗봇 흐름(Day 5 채움) / §3.2 인덱싱 흐름(Day 2 작성 완료)** 2 서브섹션으로 분할
+- [~] §3 데이터 흐름 — Day 3 시점에 **§3.1 챗봇 흐름(Day 5 채움) / §3.2 인덱싱 흐름(Day 2 완료) / §3.3 인덱싱 Workflow DAG(Day 3 완료)** 3 서브섹션으로 확장
   - [ ] §3.1 챗봇 호출 흐름 (`/chat` → 응답)
   - [x] §3.2 인덱싱 데이터 흐름 (오프라인) — Day 2 작성 (4단계 ASCII 시퀀스 + 메타데이터 4종 보존 + 챗봇 경로와 분리 이유)
-- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless / Day 2: §4.6 인덱싱 파이프라인 신규 / §4.3 vLLM·§4.4 RAG API·§4.5 Ingress TBD)_
+  - [x] §3.3 인덱싱 Workflow DAG (Day 3 — 클러스터 위 자동화) — 5-step DAG ASCII + Day 2↔Day 3 매핑 표 + git-clone 첫 step 결정 근거 + port-forward 차이
+- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless / Day 2: §4.6 인덱싱 파이프라인 / Day 3: §4.7 Argo Workflow + CronWorkflow / §4.3 vLLM·§4.4 RAG API·§4.5 Ingress TBD)_
   - [x] §4.6 인덱싱 파이프라인 (Day 2: subcommand 표 + 4 코드 발췌 + idempotent 결정 박스)
+  - [x] §4.7 Argo Workflow / CronWorkflow (Day 3: 매니페스트 3개 표 + 핵심 구조 발췌 + 결정 박스 4개(Workflow vs Job, volumeClaimTemplate 통합 마운트, namespace 분리+RBAC, CronWorkflow concurrencyPolicy+WorkflowTemplate 미도입) + Day 3 추가 컴포넌트 표)
 - [ ] §5 RAG API 구현 노트 (retriever 청크 추출, 컨텍스트 합성 규칙, 스트리밍 옵션, 80줄)
 - [ ] §6 모니터링 핵심 메트릭 (RAG / vLLM / Qdrant / GPU 4축, 60줄)
 - [ ] §7 HPA 커스텀 메트릭 (왜 CPU 기준이 부적절한가, prometheus-adapter 흐름, 60줄)
 - [ ] §8 Helm으로 한 줄 배포 (values 분리(dev/prod), `helm install --create-namespace`, 50줄)
 - [ ] §9 검증 시나리오 (6단계, §9와 동일)
-- [~] §10 🚨 자주 하는 실수 _(Day 1: Qdrant/StatefulSet 3건 + Day 2: 인덱싱 3건 = 6건. 추후 Day 4 vLLM·Day 8 HPA 항목 추가 예정)_
+- [~] §10 🚨 자주 하는 실수 _(Day 1: Qdrant/StatefulSet 3건 + Day 2: 인덱싱 3건 + Day 3: Argo/RBAC 3건 = 9건. 추후 Day 4 vLLM·Day 8 HPA 항목 추가 예정)_
 - [ ] §11 확장 아이디어 (reranker, 스트리밍, 멀티턴, RAGAS 평가, 30줄)
 - [ ] §12 다음 단계 링크 (Phase 5 또는 본인 업무 적용)
 
@@ -185,10 +190,14 @@
 - [ ] 검증: 학습자 단계 — `points_count > 0` (예상 500~800), `python pipeline.py search` 결과 top1 의 `payload.source` 가 본 코스 파일
 
 ### Day 3 — Argo Workflow로 인덱싱
-- [ ] `manifests/50-indexing-workflow.yaml`, `51-indexing-cron.yaml` 이식
-- [ ] Argo 설치 (Phase 4-4 참조) → Workflow 제출 → 완료 확인
-- [ ] `labs/day-03-indexing-argo.md`
-- [ ] 검증: `kubectl get wf` STATUS=Succeeded
+- [x] `manifests/49-argo-rbac.yaml` 이식 (Phase 4-4 `01-argo-rbac.yaml` namespace 변경)
+- [x] `manifests/50-indexing-workflow.yaml` 이식 + git-clone step 1개 신규 추가 → 5-step DAG (`git-clone → load-docs → chunk → embed → upsert`)
+- [x] `manifests/51-indexing-cronworkflow.yaml` 이식 + workflowSpec 동기화 + 모델명 갱신
+- [x] `labs/day-03-indexing-argo.md` (Goal 5/사전조건 6/Step 8/검증 8/정리/트러블슈팅 7)
+- [x] lesson.md §1.1 다이어그램 보강 + §3.3 신규 + §4.7 신규 + §10 (실수 3건 추가, 총 9건), architecture.md §3.6+§3.7 신규 + §7 갱신
+- [x] `labs/README.md` 신규 작성 (Day 1~3 인덱스 + Day 4~10 예정)
+- [x] `practice/pipelines/indexing/README.md` Day 3 단락 갱신 (환경변수 비교 표 + step 매핑 + 이미지 빌드 명령)
+- [ ] 검증: 학습자 단계 — Argo controller 설치 + RBAC 적용 + 이미지 빌드/푸시 + Workflow Succeeded + CronWorkflow `0 3 * * *` 표시 + 수동 트리거 + Day 2 와 동일 `points_count`
 
 ### Day 4 — vLLM Deployment
 - [ ] `manifests/20-vllm-deployment.yaml`, `21-vllm-pvc.yaml`, `22-vllm-service.yaml`, `23-vllm-hf-secret.yaml` 이식
@@ -246,7 +255,7 @@
 
 - [x] Day 1 — 아키텍처 문서 작성 + Namespace + Qdrant StatefulSet (2026-05-06)
 - [x] Day 2 — 임베딩·인덱싱 스크립트 작성, 로컬 테스트 (2026-05-06)
-- [ ] Day 3 — 인덱싱 Argo Workflow 클러스터 실행
+- [x] Day 3 — 인덱싱 Argo Workflow 클러스터 실행 (2026-05-06)
 - [ ] Day 4 — vLLM Deployment + OpenAI 호환 API 호출 검증
 - [ ] Day 5 — RAG API 구현 (retriever + LLM 결합)
 - [ ] Day 6 — RAG API Deployment + Service + Ingress
@@ -257,9 +266,9 @@
 
 산출물 4종 관점 체크 (캡스톤은 단일 토픽이지만 4종을 만족해야 함):
 
-- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건 추가))_
-- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건)_
-- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2 작성 완료, README 와 day-03~day-10 미작성)_
+- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건 추가) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건 추가, 총 9건))_
+- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건 추가(49·50·51) + practice/pipelines/indexing/README.md Day 3 단락 갱신)_
+- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3 작성 완료, README 신규 작성 완료, day-04~day-10 미작성)_
 - [ ] **GPU 클러스터 검증** — Day 10 통합 검증 + GKE 클러스터 삭제 로그
 
 ---
@@ -379,3 +388,9 @@ gcloud container clusters delete capstone --zone us-central1-a --quiet
 - **2026-05-06 (Day 2)** — **idempotent upsert 트레이드오프**: Phase 4-4 의 `recreate_collection` (매 실행마다 비우기) → `create_collection_if_not_exists + uuid5(NAMESPACE_URL, chunk_id) + upsert` 로 전환. 운영 시 무중단 재인덱싱 + 부분 갱신 가능. 차원 불일치만 명시적 에러로 처리. lesson.md §4.6.5 결정 박스 + §10 자주 하는 실수 ⑥번. Day 3 Argo Workflow / CronWorkflow 설계 시 본 패턴이 이어집니다.
 - **2026-05-06 (Day 2)** — **lesson.md §3 분할 결정**: 캡스톤 plan §6 의 단일 §3(데이터 흐름)은 챗봇 호출 흐름만 가정했으나, 캡스톤은 인덱싱(오프라인 배치) 와 챗봇(온라인 동기) 두 흐름이 분리 운영되므로 §3 을 §3.1 (챗봇 — Day 5 채움) + §3.2 (인덱싱 — Day 2 작성 완료) 로 분할. 본 plan §6 의 섹션 표도 함께 갱신.
 - **2026-05-06 (Day 2)** — **청크 메타데이터 4 종(`source/phase/topic/heading`) 도입**: Day 5/6 의 RAG API 가 응답 `sources` 항목에 그대로 노출할 출처 라벨. 인덱싱 시점에 부여하지 않으면 검색 후 파일 역추적이 필요해 latency 가 늘어남. 청킹 1 차에 `MarkdownHeaderTextSplitter(strip_headers=False)` 로 h1/h2/h3 보존 후 ` > ` 로 연결한 헤딩 경로(`Phase 4 > vLLM > startupProbe`) 형식. architecture.md §3.5.1·§3.5.2 에 결정 근거.
+- **2026-05-06 (Day 3)** — **입력 데이터 적재: Workflow 첫 step 에서 git-clone (사용자 승인)**: 본 plan §2 에 정리된 3 옵션(A: git-clone step / B: kubectl cp 사전 적재 / C: ConfigMap) 중 A 선택. Argo 의 step 의존성·자동화 가치를 살리고 CronWorkflow 가 매 실행마다 자동으로 main 브랜치 최신 자료 반영. DAG 가 4-step → **5-step** (`git-clone → load-docs → chunk → embed → upsert`) 으로 확장. 매니페스트 `50-indexing-workflow.yaml` 의 git-clone-step template 에 `alpine/git:2.45.2` + `git clone --depth 1` 으로 약 50MB shallow clone 으로 부담 최소화. 학습자 본인 fork 가 public 이라는 전제(plan §13 위험 항목).
+- **2026-05-06 (Day 3)** — **이미지 레지스트리: Docker Hub 본인 계정 (사용자 승인)**: 매니페스트의 placeholder `docker.io/<user>/rag-indexer:0.1.0` 는 labs Step 4 의 `sed` 명령으로 본인 ID 로 일괄 치환. GKE 노드는 public Docker Hub 이미지를 무인증 pull. Phase 4-4 의 `minikube docker-env` 패턴(로컬 inner Docker daemon) 은 GKE 환경에서 동작하지 않아 캡스톤은 외부 레지스트리로 전환. GAR/Kaniko 대안은 학습 부담으로 제외. labs/day-03 §🔧 사전 조건 + Step 3 + Step 4 에 명시.
+- **2026-05-06 (Day 3)** — **WorkflowTemplate 미도입 (사용자 승인)**: 50 과 51 의 workflowSpec 본문이 거의 동일해 DRY 가 깨지지만, 캡스톤의 학습 목표는 Argo 자체가 아닌 RAG 시스템 통합이므로 단순성 우선. WorkflowTemplate 의 가치(공통 4-step DAG 추출, templateRef 참조)는 lesson.md §4.7 결정 박스 ④ + Phase 4-4 lesson §1-1 링크로 한 줄 안내. 향후 Day 4~10 의 매니페스트 누적이 늘어나면 도입 재고 가능.
+- **2026-05-06 (Day 3)** — **단일 PVC 통합 마운트 (mountPath 2 개로 `/docs` + `/data`)**: 5 step 이 공유할 데이터를 별도 PVC 2 개로 나누면 RWO accessMode 노드 제약이 step 마다 두 번 발생. 단일 PVC 의 mountPath 2 개로 통합하면 step 들이 같은 노드에서 순차 실행 + volumeClaimGC 가 1 개만 정리. architecture.md §3.7 에 운영 한계(진짜 병렬화 시 RWX 필요, 다른 워크플로우 간 공유 시 객체 스토리지) 까지 정리. lesson.md §4.7 결정 박스 ② + §10 자주 하는 실수 ⑨번에서도 강조.
+- **2026-05-06 (Day 3)** — **namespace 분리: controller 는 `argo`, Workflow 는 `rag-llm`**: 두 namespace 를 같게 두면 RBAC 단순화되지만, 분리하면 캡스톤(`rag-llm`) 만 통째로 삭제할 때 controller 가 영향 받지 않음. 추가 비용은 RBAC 매니페스트 1 개(`49-argo-rbac.yaml`). Workflow Pod 가 자식 Pod 생성하려면 ServiceAccount `workflow` + Role(`pods`/`pods/log`/`workflowtaskresults`) + RoleBinding 필요. 누락하면 `pods is forbidden` 메시지 — Phase 4-4 자주 하는 실수 1번 + 캡스톤 lesson.md §10 자주 하는 실수 ⑦번 동일.
+- **2026-05-06 (Day 3)** — **CronWorkflow `concurrencyPolicy: Replace` 채택**: 3 옵션(Allow/Forbid/Replace) 중 Replace. Day 2 의 idempotent upsert 패턴(uuid5 결정론적 point ID + create_if_not_exists) 이 동일 자료 재실행을 안전하게 만들어 주므로 Replace(이전 취소 후 새로 시작) 가 자연스러움. Allow 는 동일 PVC 경합 위험, Forbid 는 자료 갱신 지연. lesson.md §4.7 결정 박스 ④에 명시.

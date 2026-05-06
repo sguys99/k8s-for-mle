@@ -1,0 +1,121 @@
+# 출처: course/phase-4-ml-on-k8s/04-argo-workflows/manifests/30-rag-indexing-cron.yaml
+#       (4 가지 변경:
+#         1) namespace ml-pipelines → rag-llm,
+#         2) workflowSpec 의 DAG 에 git-clone step 동일하게 추가 (5-step),
+#         3) 컨테이너 이미지/env 를 50-indexing-workflow.yaml 과 동일하게 맞춤,
+#         4) embedding-model 기본값을 intfloat/multilingual-e5-small 로 갱신)
+#
+# 일별 자동 재인덱싱.
+# CronWorkflow 는 Workflow 와 spec 구조가 거의 같지만 schedule/concurrencyPolicy 가 추가되고,
+# 본문은 workflowSpec 아래로 한 단계 더 들어갑니다.
+#
+# 캡스톤은 "본 코스 자료가 매일 갱신되는데 그날 새로 올라온 lesson.md 만 인덱싱하고 싶다" 라는
+# 시나리오를 그대로 모델링합니다. pipeline.py 의 idempotent upsert 패턴(uuid5 결정론적 point ID +
+# create_collection_if_not_exists) 덕분에 매번 전체 재인덱싱해도 RAG API 가 빈 컬렉션을 만나지 않습니다.
+#
+# DRY 트레이드오프: workflowSpec 본문이 50-indexing-workflow.yaml 의 spec 과 거의 동일합니다.
+# 운영에서는 WorkflowTemplate 으로 추출해 templateRef 로 참조하는 패턴이 권장되지만, 캡스톤은
+# 학습 단순성을 위해 두 매니페스트가 본문을 공유하지 않습니다 (lesson.md §4.7 결정 박스 ④ 참조).
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: rag-indexing-daily
+  namespace: rag-llm
+  labels:
+    app: argo-workflow
+    component: indexing-pipeline
+    purpose: capstone-rag-llm-serving
+    course: k8s-for-mle
+spec:
+  schedule: "0 3 * * *"                     # 매일 03:00 (timezone 으로 KST 명시)
+  timezone: "Asia/Seoul"                    # controller 노드의 TZ 와 무관하게 KST 03:00 으로 고정
+  concurrencyPolicy: Replace                # 이전 실행이 안 끝났으면 죽이고 새로 시작 — 인덱싱은 idempotent 라 안전
+  successfulJobsHistoryLimit: 3             # 성공한 워크플로우 최근 3건만 유지 (etcd 비대 방지)
+  failedJobsHistoryLimit: 1                 # 실패는 1건만 — 학습 환경에서는 디버깅 후 즉시 재실행 가정
+  startingDeadlineSeconds: 300              # controller 가 5 분 이상 늦으면 그 회차는 건너뜀
+
+  # 실제 실행될 워크플로우 본문. 50-indexing-workflow.yaml 의 spec 과 같은 구조여야 합니다.
+  workflowSpec:
+    entrypoint: rag-indexing
+    serviceAccountName: workflow
+
+    arguments:
+      parameters:
+      - { name: git-repo,        value: "https://github.com/<user>/k8s-for-mle.git" }    # TODO: <user> 를 본인 GitHub 계정으로 치환
+      - { name: git-branch,      value: "main" }
+      - { name: collection-name, value: "rag-docs" }
+      - { name: chunk-size,      value: "512" }
+      - { name: chunk-overlap,   value: "64" }
+      - { name: embedding-model, value: "intfloat/multilingual-e5-small" }
+
+    volumeClaimTemplates:
+    - metadata: { name: pipeline-data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 2Gi } }
+    volumeClaimGC:
+      strategy: OnWorkflowCompletion
+
+    templates:
+
+    # --- DAG: git-clone → load-docs → chunk → embed → upsert ---
+    - name: rag-indexing
+      dag:
+        tasks:
+        - { name: git-clone, template: git-clone-step }
+        - { name: load-docs, template: pipeline-step, dependencies: [git-clone],
+            arguments: { parameters: [ { name: subcommand, value: "load-docs" }, { name: extra-args, value: "" } ] } }
+        - { name: chunk,     template: pipeline-step, dependencies: [load-docs],
+            arguments: { parameters: [ { name: subcommand, value: "chunk" },     { name: extra-args, value: "--chunk-size {{workflow.parameters.chunk-size}} --chunk-overlap {{workflow.parameters.chunk-overlap}}" } ] } }
+        - { name: embed,     template: pipeline-step, dependencies: [chunk],
+            arguments: { parameters: [ { name: subcommand, value: "embed" },     { name: extra-args, value: "--model {{workflow.parameters.embedding-model}}" } ] } }
+        - { name: upsert,    template: pipeline-step, dependencies: [embed],
+            arguments: { parameters: [ { name: subcommand, value: "upsert" },    { name: extra-args, value: "--collection {{workflow.parameters.collection-name}}" } ] } }
+
+    # --- step 1: git-clone ---
+    - name: git-clone-step
+      container:
+        image: alpine/git:2.45.2
+        command: ["sh", "-c"]
+        args:
+          - |
+            set -euo pipefail
+            echo "[$(date -Iseconds)] cloning {{workflow.parameters.git-repo}} (branch {{workflow.parameters.git-branch}}) -> /docs/k8s-for-mle"
+            git clone --depth 1 --branch "{{workflow.parameters.git-branch}}" \
+              "{{workflow.parameters.git-repo}}" /docs/k8s-for-mle
+            echo "[$(date -Iseconds)] clone done."
+        resources:
+          requests: { cpu: "100m", memory: "128Mi" }
+          limits:   { cpu: "500m", memory: "256Mi" }
+        volumeMounts:
+        - { name: pipeline-data, mountPath: /docs }
+
+    # --- step 2~5 공유 template ---
+    - name: pipeline-step
+      inputs:
+        parameters:
+        - { name: subcommand }
+        - { name: extra-args }
+      container:
+        image: docker.io/<user>/rag-indexer:0.1.0   # TODO: <user> 를 본인 Docker Hub 계정으로 치환 (labs Step 5)
+        imagePullPolicy: Always
+        command: ["sh", "-c"]
+        args:
+          - |
+            set -euo pipefail
+            echo "[$(date -Iseconds)] step={{inputs.parameters.subcommand}} args={{inputs.parameters.extra-args}}"
+            python /app/pipeline.py "{{inputs.parameters.subcommand}}" {{inputs.parameters.extra-args}}
+        env:
+        - { name: DOCS_ROOT,         value: "/docs/k8s-for-mle/course" }
+        - { name: ROADMAP_PATH,      value: "/docs/k8s-for-mle/docs/study-roadmap.md" }
+        - { name: PIPELINE_DATA_DIR, value: "/data" }
+        - { name: QDRANT_URL,        value: "http://qdrant.rag-llm.svc.cluster.local:6333" }
+        - { name: EMBED_MODEL,       value: "intfloat/multilingual-e5-small" }
+        - { name: QDRANT_COLLECTION, value: "rag-docs" }
+        - { name: HF_HOME,           value: "/data/hf-cache" }
+        resources:
+          requests: { cpu: "200m", memory: "512Mi" }
+          limits:   { cpu: "1500m", memory: "2Gi" }
+        volumeMounts:
+        - { name: pipeline-data, mountPath: /docs }
+        - { name: pipeline-data, mountPath: /data }

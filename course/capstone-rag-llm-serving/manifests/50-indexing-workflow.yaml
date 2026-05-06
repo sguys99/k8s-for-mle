@@ -1,0 +1,151 @@
+# 출처: course/phase-4-ml-on-k8s/04-argo-workflows/manifests/20-rag-indexing-workflow.yaml
+#       (5 가지 변경:
+#         1) namespace ml-pipelines → rag-llm,
+#         2) DAG 에 git-clone step 신규 추가 (4-step → 5-step),
+#         3) 컨테이너 이미지 rag-pipeline:0.1.0 → docker.io/<user>/rag-indexer:0.1.0,
+#         4) env 6 종 주입 (DOCS_ROOT/ROADMAP_PATH/QDRANT_URL/PIPELINE_DATA_DIR/EMBED_MODEL/QDRANT_COLLECTION),
+#         5) volumeClaimTemplate 1 개로 /docs + /data 통합 마운트)
+#
+# Day 3 의 메인 산출물. Day 2 에서 작성한 동일한 pipeline.py 코드를 컨테이너 이미지로 패키징하고,
+# 첫 step 에서 본 코스 자료(`course/phase-*/**/lesson.md` + `docs/study-roadmap.md`) 를 git clone 으로
+# /docs 에 가져와 4 단계(load-docs → chunk → embed → upsert) 가 차례로 처리합니다.
+# 모든 step 은 같은 PVC `pipeline-data` 의 두 mountPath(`/docs`, `/data`) 를 공유합니다.
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: rag-indexing-
+  namespace: rag-llm
+  labels:
+    app: argo-workflow
+    component: indexing-pipeline
+    purpose: capstone-rag-llm-serving
+    course: k8s-for-mle
+spec:
+  entrypoint: rag-indexing
+  serviceAccountName: workflow              # 49-argo-rbac.yaml 에서 만든 SA. 누락하면 즉시 RBAC 실패.
+
+  # 글로벌 파라미터 — `argo submit -p key=value` 로 덮어쓸 수 있습니다.
+  # Day 2 의 pipeline.py CLI 옵션과 1:1 매핑됩니다 (--chunk-size, --chunk-overlap, --model, --collection).
+  arguments:
+    parameters:
+    - { name: git-repo,        value: "https://github.com/<user>/k8s-for-mle.git" }    # TODO: <user> 를 본인 GitHub 계정으로 치환
+    - { name: git-branch,      value: "main" }
+    - { name: collection-name, value: "rag-docs" }
+    - { name: chunk-size,      value: "512" }
+    - { name: chunk-overlap,   value: "64" }
+    - { name: embedding-model, value: "intfloat/multilingual-e5-small" }                # Day 2 결정 (한국어 다수 자료 대응)
+
+  # 5 step 이 공유할 PVC 1 개.
+  # /docs 와 /data 를 별도 PVC 로 나누지 않고 같은 PVC 의 두 mountPath 로 통합한 이유는
+  # RWO accessMode 의 노드 제약이 step 마다 발생하지 않게 하기 위함입니다 (architecture.md §3.7 참조).
+  # workflow 가 끝나면 OnWorkflowCompletion 정책으로 자동 삭제됩니다.
+  volumeClaimTemplates:
+  - metadata:
+      name: pipeline-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests: { storage: 2Gi }          # git clone (~50MB) + 중간 산출물(~수백 MB) + HF 모델 캐시(~130MB)
+  volumeClaimGC:
+    strategy: OnWorkflowCompletion          # workflow 종료 시 PVC 자동 정리
+
+  templates:
+
+  # --- DAG 정의 (5 step) ---
+  # git-clone → load-docs → chunk → embed → upsert
+  # Day 2 의 4 단계 subcommand 앞에 git-clone step 1 개가 추가되어, CronWorkflow 가 매 실행마다
+  # 자동으로 최신 코스 자료를 반영할 수 있습니다.
+  - name: rag-indexing
+    dag:
+      tasks:
+      - name: git-clone
+        template: git-clone-step
+      - name: load-docs
+        dependencies: [git-clone]
+        template: pipeline-step
+        arguments:
+          parameters:
+          - { name: subcommand, value: "load-docs" }
+          - { name: extra-args, value: "" }
+      - name: chunk
+        dependencies: [load-docs]
+        template: pipeline-step
+        arguments:
+          parameters:
+          - { name: subcommand, value: "chunk" }
+          - { name: extra-args, value: "--chunk-size {{workflow.parameters.chunk-size}} --chunk-overlap {{workflow.parameters.chunk-overlap}}" }
+      - name: embed
+        dependencies: [chunk]
+        template: pipeline-step
+        arguments:
+          parameters:
+          - { name: subcommand, value: "embed" }
+          - { name: extra-args, value: "--model {{workflow.parameters.embedding-model}}" }
+      - name: upsert
+        dependencies: [embed]
+        template: pipeline-step
+        arguments:
+          parameters:
+          - { name: subcommand, value: "upsert" }
+          - { name: extra-args, value: "--collection {{workflow.parameters.collection-name}}" }
+
+  # --- step 1: git-clone ---
+  # alpine/git 이미지로 본 코스 레포를 /docs/k8s-for-mle 에 shallow clone.
+  # 학습자 본인 fork 가 public 이라는 전제(plan §13 위험 항목 참고).
+  # private repo 사용 시: `--depth 1` 앞에 `-c credential.helper='!aws codecommit credential-helper $@'`
+  # 같은 인증 옵션을 추가하거나, Secret 으로 SSH key 를 마운트하는 방식으로 확장.
+  - name: git-clone-step
+    container:
+      image: alpine/git:2.45.2
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          echo "[$(date -Iseconds)] cloning {{workflow.parameters.git-repo}} (branch {{workflow.parameters.git-branch}}) -> /docs/k8s-for-mle"
+          # /docs 는 PVC 마운트 — clone 결과가 다음 step 들에 그대로 보입니다.
+          # 동일 워크플로우 안에서는 항상 깨끗한 PVC 이므로 rm -rf 같은 정리는 불필요합니다.
+          git clone --depth 1 --branch "{{workflow.parameters.git-branch}}" \
+            "{{workflow.parameters.git-repo}}" /docs/k8s-for-mle
+          echo "[$(date -Iseconds)] clone done. listing top-level:"
+          ls /docs/k8s-for-mle | head -20
+      resources:
+        requests: { cpu: "100m", memory: "128Mi" }
+        limits:   { cpu: "500m", memory: "256Mi" }
+      volumeMounts:
+      - { name: pipeline-data, mountPath: /docs }   # clone 결과 적재 위치
+
+  # --- step 2~5 가 공유하는 template ---
+  # 같은 이미지(rag-indexer:0.1.0)가 subcommand 만 바꿔 4 단계 모두 처리합니다.
+  # /docs 에는 git-clone 결과가, /data 에는 단계 간 결과(jsonl) 가 쌓입니다.
+  - name: pipeline-step
+    inputs:
+      parameters:
+      - { name: subcommand }
+      - { name: extra-args }
+    container:
+      image: docker.io/<user>/rag-indexer:0.1.0    # TODO: <user> 를 본인 Docker Hub 계정으로 치환 (labs Step 5)
+      imagePullPolicy: Always                       # public 이미지를 매번 최신으로 pull (학습용 명료성)
+      command: ["sh", "-c"]
+      # subcommand 는 quote 로 감싸 중간 공백 안전 처리. extra-args 는 그대로 토큰 분해되도록 quote 없이 둠.
+      args:
+        - |
+          set -euo pipefail
+          echo "[$(date -Iseconds)] step={{inputs.parameters.subcommand}} args={{inputs.parameters.extra-args}}"
+          python /app/pipeline.py "{{inputs.parameters.subcommand}}" {{inputs.parameters.extra-args}}
+      env:
+      # Day 2 의 pipeline.py 환경변수 4 종 + 모델/컬렉션 추가 — 코드 변경 없이 컨테이너 컨텍스트로 전환됩니다.
+      - { name: DOCS_ROOT,         value: "/docs/k8s-for-mle/course" }                       # git clone 결과의 course/
+      - { name: ROADMAP_PATH,      value: "/docs/k8s-for-mle/docs/study-roadmap.md" }        # study-roadmap 별도 추가
+      - { name: PIPELINE_DATA_DIR, value: "/data" }                                          # 단계 간 jsonl 공유 디렉토리
+      - { name: QDRANT_URL,        value: "http://qdrant.rag-llm.svc.cluster.local:6333" }   # 클러스터 내부 DNS (port-forward 불필요)
+      - { name: EMBED_MODEL,       value: "intfloat/multilingual-e5-small" }                  # Day 2 결정 — 한국어 대응 다국어 모델
+      - { name: QDRANT_COLLECTION, value: "rag-docs" }                                        # Day 1 시점에 만들 컬렉션명
+      # Hugging Face 모델 캐시를 워크플로우 동안만 살아있는 PVC 로 — 단계 간 모델 재다운로드 방지.
+      # 단, 다른 워크플로우 사이에서는 PVC 가 매번 새로 생성되므로 재다운로드 발생 (운영에서는 별도 영구 PVC 또는 이미지에 모델 굽기).
+      - { name: HF_HOME,           value: "/data/hf-cache" }
+      resources:
+        requests: { cpu: "200m", memory: "512Mi" }
+        limits:   { cpu: "1500m", memory: "2Gi" }   # embed step 이 가장 무거움 (~1Gi). OOM 시 limits 상향 또는 chunk-size 축소.
+      volumeMounts:
+      - { name: pipeline-data, mountPath: /docs }   # git-clone 결과 (read-only 로 사용)
+      - { name: pipeline-data, mountPath: /data }   # 단계 간 jsonl + HF 캐시 공유

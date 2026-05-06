@@ -1,0 +1,62 @@
+# 출처: course/phase-4-ml-on-k8s/04-argo-workflows/manifests/01-argo-rbac.yaml
+#       (namespace ml-pipelines → rag-llm 변경, 그 외 동일)
+#
+# Argo workflow controller 는 별도 namespace `argo` 에 quick-start-minimal 로 설치되지만,
+# 실제 Workflow 는 캡스톤 namespace `rag-llm` 에서 실행되므로 이쪽에 ServiceAccount + Role + RoleBinding
+# 한 묶음이 필요합니다. Workflow Pod 자체가 자식 Pod (load-docs/chunk/embed/upsert step) 을 생성하기
+# 때문에, Workflow Pod 의 ServiceAccount 가 pods/pods-log/workflowtaskresults 권한을 가져야 합니다.
+# default ServiceAccount 로 Workflow 를 제출하면 "pods is forbidden" 으로 즉시 실패합니다 — Day 3
+# lesson.md §10 자주 하는 실수 ⑦번 시연 매니페스트입니다.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workflow                         # Workflow.spec.serviceAccountName 에서 참조하는 이름
+  namespace: rag-llm
+  labels:
+    app: argo-workflow
+    component: indexing-pipeline
+    purpose: capstone-rag-llm-serving
+    course: k8s-for-mle
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workflow
+  namespace: rag-llm
+  labels:
+    app: argo-workflow
+    component: indexing-pipeline
+    purpose: capstone-rag-llm-serving
+    course: k8s-for-mle
+rules:
+# 자식 Pod 생성/조회/감시. argo workflow-controller 가 아닌 Workflow Pod 자체가 호출하는 권한입니다.
+- apiGroups: [""]
+  resources: ["pods", "pods/exec"]
+  verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+# argo logs 명령이 자식 Pod 의 stdout 을 읽을 때 필요한 권한입니다.
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get", "list", "watch"]
+# 단계 사이의 결과(parameters/artifacts) 를 controller 가 보관하는 CRD 입니다.
+- apiGroups: ["argoproj.io"]
+  resources: ["workflowtaskresults"]
+  verbs: ["create", "get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workflow
+  namespace: rag-llm
+  labels:
+    app: argo-workflow
+    component: indexing-pipeline
+    purpose: capstone-rag-llm-serving
+    course: k8s-for-mle
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workflow
+subjects:
+- kind: ServiceAccount
+  name: workflow
+  namespace: rag-llm
