@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment files (RAG API 의 .env 등 — 토큰/시크릿 commit 방지)
+.env
+*.env.local
+
+# RAG 인덱싱 파이프라인 로컬 데이터
+.pipeline-data/
+
+# pytest / mypy / coverage
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

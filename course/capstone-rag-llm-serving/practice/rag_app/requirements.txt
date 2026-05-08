@@ -1,0 +1,21 @@
+# 캡스톤 RAG API (FastAPI) 의존성
+# 이식 출처: .claude/skills/k8s-ml-course-author/assets/templates/practice/requirements.txt.tmpl
+# 변경: 본 캡스톤은 RAG API 가 자체 추론을 수행하지 않고 vLLM 을 호출하므로
+#       transformers / torch 를 제거하고, 임베딩(sentence-transformers) + Qdrant + OpenAI SDK 만 추가합니다.
+
+# FastAPI 본체
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.0
+
+# Prometheus 메트릭 노출 (/metrics 엔드포인트)
+prometheus-client==0.21.0
+
+# 벡터 검색 — Day 1 의 Qdrant StatefulSet 호출
+qdrant-client==1.12.0
+
+# 임베딩 모델 — Day 2 결정(intfloat/multilingual-e5-small) 과 동일 라이브러리
+sentence-transformers==3.1.0
+
+# vLLM OpenAI 호환 API 호출 — Day 4 의 served-model-name=microsoft/phi-2
+openai==1.51.0

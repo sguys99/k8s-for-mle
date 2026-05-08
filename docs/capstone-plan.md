@@ -88,13 +88,14 @@
 
 ### 4.4 `practice/rag_app/` — RAG API 코드 ★ 신규 일체
 
-- [ ] `Dockerfile`
-- [ ] `requirements.txt`
-- [ ] `main.py` (FastAPI 진입점, `/chat` `/healthz` `/metrics`)
-- [ ] `retriever.py` (Qdrant 검색)
-- [ ] `llm_client.py` (vLLM `/v1/chat/completions` 호출)
-- [ ] `prompts.py` (프롬프트 템플릿: system / context / user)
-- [ ] `tests/test_retriever.py` (로컬 단위 테스트)
+- [x] `Dockerfile` _(Day 5: 멀티스테이지 + port 8001 + main:app entrypoint)_
+- [x] `requirements.txt` _(Day 5: fastapi/uvicorn/pydantic + qdrant-client/sentence-transformers/openai/prometheus-client, transformers/torch 제거)_
+- [x] `main.py` (FastAPI 진입점, `/chat` `/healthz` `/ready` `/metrics`) _(Day 5: lifespan + app.state 캐싱, Pydantic ChatRequest/Response, 메트릭 4 종, 3 모듈 조립)_
+- [x] `retriever.py` (Qdrant 검색) _(Day 5: QdrantRetriever 클래스 + RetrievedChunk dataclass, e5 query prefix, embed/qdrant 의존성 주입)_
+- [x] `llm_client.py` (vLLM `/v1/chat/completions` 호출) _(Day 5: VLLMClient 클래스 + OpenAI SDK + timeout=120, served-model-name 매개변수)_
+- [x] `prompts.py` (프롬프트 템플릿: system / context / user) _(Day 5: 한국어 SYSTEM_PROMPT + build_context + build_messages, 메타 4 종 노출, 인용 마커 [n] 강제)_
+- [x] `tests/test_retriever.py` (로컬 단위 테스트) _(Day 5: 5+1 케이스, Qdrant·임베딩 모두 mock, CI 친화)_
+- [x] `.env.example` _(Day 5: 6 환경변수 로컬 개발 템플릿)_
 
 ### 4.5 `practice/llm_serving/`
 
@@ -117,7 +118,7 @@
 - [x] `labs/day-02-indexing-script-local.md` ★ _(Day 2: Goal/사전조건 6/Step 10/검증 체크리스트/정리/트러블슈팅 7항목)_
 - [x] `labs/day-03-indexing-argo.md` ★ _(Day 3: Goal 5/사전조건 6/Step 8/검증 체크리스트 8/정리/트러블슈팅 7항목)_
 - [x] `labs/day-04-vllm-deploy.md` ★ _(Day 4: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 5 분기/트러블슈팅 11항목)_
-- [ ] `labs/day-05-rag-api-impl.md` ★
+- [x] `labs/day-05-rag-api-impl.md` ★ _(Day 5: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 2 분기/트러블슈팅 9항목)_
 - [ ] `labs/day-06-rag-api-deploy.md` ★
 - [ ] `labs/day-07-config-secret-monitoring.md` ★
 - [ ] `labs/day-08-grafana-hpa.md` ★
@@ -153,21 +154,22 @@
 - [x] §0 학습 목표 6개 (위 §3에서 인용)
 - [x] §0 도입 — 왜 ML 엔지니어에게 필요한가 (1문단)
 - [x] §1 시스템 아키텍처 (ASCII 다이어그램 + 컴포넌트별 역할표, 80~100줄)
-- [~] §2 왜 이렇게 분리했는가 (트레이드오프, 100줄) _(Day 4: §2 도입 + §2.1 vLLM 분리 4 축 + §2.2/§2.4 한 줄 인용 / §2.3 RAG API 분리는 Day 5~6 TBD)_
-- [~] §3 데이터 흐름 — Day 3 시점에 **§3.1 챗봇 흐름(Day 5 채움) / §3.2 인덱싱 흐름(Day 2 완료) / §3.3 인덱싱 Workflow DAG(Day 3 완료)** 3 서브섹션으로 확장
-  - [ ] §3.1 챗봇 호출 흐름 (`/chat` → 응답)
+- [~] §2 왜 이렇게 분리했는가 (트레이드오프, 100줄) _(Day 4: §2 도입 + §2.1 vLLM 분리 4 축 + §2.2/§2.4 한 줄 인용 / Day 5: §2.3 RAG API 분리 4 축 신규 — 배포·상태·메트릭·의존성)_
+- [x] §3 데이터 흐름 — **§3.1 챗봇 흐름(Day 5 완료) / §3.2 인덱싱 흐름(Day 2 완료) / §3.3 인덱싱 Workflow DAG(Day 3 완료)** 3 서브섹션 모두 작성됨
+  - [x] §3.1 챗봇 호출 흐름 (`/chat` → 응답) — Day 5 작성 (7 단계 ASCII 시퀀스 + 단계별 책임/latency 표 + 동기 호출 채택 근거 + streaming 미도입 결정)
   - [x] §3.2 인덱싱 데이터 흐름 (오프라인) — Day 2 작성 (4단계 ASCII 시퀀스 + 메타데이터 4종 보존 + 챗봇 경로와 분리 이유)
   - [x] §3.3 인덱싱 Workflow DAG (Day 3 — 클러스터 위 자동화) — 5-step DAG ASCII + Day 2↔Day 3 매핑 표 + git-clone 첫 step 결정 근거 + port-forward 차이
-- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless / Day 2: §4.6 인덱싱 파이프라인 / Day 3: §4.7 Argo Workflow + CronWorkflow / Day 4: §4.3 vLLM Deployment / §4.4 RAG API·§4.5 Ingress TBD)_
+- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless / Day 2: §4.6 인덱싱 파이프라인 / Day 3: §4.7 Argo Workflow + CronWorkflow / Day 4: §4.3 vLLM Deployment / Day 5: §4.4 자리표시 단락(Day 6 이월 안내 + 매니페스트 4 종 미리보기) / §4.5 Ingress 는 Day 6 TBD)_
   - [x] §4.3 vLLM Deployment (Day 4: 매니페스트 4 종 표 + args 6 종 발췌 + GPU 격리 3 종 발췌 + startupProbe 발췌 + volumes 발췌 + 결정 박스 4개(이름 통일, served-model-name, GPU 노드 풀 분리, HF Secret 옵션) + Day 4 추가 컴포넌트 표)
+  - [x] §4.4 RAG API Deployment 자리표시 (Day 5: Day 6 에서 작성할 매니페스트 4 종(30/31/32/33) 미리보기 + Day 5 코드의 Dockerfile/.env.example 가 Day 6 ConfigMap/Secret 의 원본 명세서 역할 명시)
   - [x] §4.6 인덱싱 파이프라인 (Day 2: subcommand 표 + 4 코드 발췌 + idempotent 결정 박스)
   - [x] §4.7 Argo Workflow / CronWorkflow (Day 3: 매니페스트 3개 표 + 핵심 구조 발췌 + 결정 박스 4개(Workflow vs Job, volumeClaimTemplate 통합 마운트, namespace 분리+RBAC, CronWorkflow concurrencyPolicy+WorkflowTemplate 미도입) + Day 3 추가 컴포넌트 표)
-- [ ] §5 RAG API 구현 노트 (retriever 청크 추출, 컨텍스트 합성 규칙, 스트리밍 옵션, 80줄)
+- [x] §5 RAG API 구현 노트 (Day 5: 6 소절 — §5.1 모듈 분리 원칙 표 + §5.2 retriever (e5 prefix + 모델 캐싱) + §5.3 llm_client (timeout/api_key/temperature) + §5.4 prompts (한국어 SYSTEM_PROMPT + 인용 마커) + §5.5 main (lifespan + 4 메트릭 + 결정 박스 임베딩 캐싱 3 옵션) + §5.6 tests/test_retriever 6 케이스 표)
 - [ ] §6 모니터링 핵심 메트릭 (RAG / vLLM / Qdrant / GPU 4축, 60줄)
 - [ ] §7 HPA 커스텀 메트릭 (왜 CPU 기준이 부적절한가, prometheus-adapter 흐름, 60줄)
 - [ ] §8 Helm으로 한 줄 배포 (values 분리(dev/prod), `helm install --create-namespace`, 50줄)
 - [ ] §9 검증 시나리오 (6단계, §9와 동일)
-- [~] §10 🚨 자주 하는 실수 _(Day 1: Qdrant/StatefulSet 3건 + Day 2: 인덱싱 3건 + Day 3: Argo/RBAC 3건 + Day 4: vLLM/GPU 3건(노드 풀 taint 누락·served-model-name 불일치·PVC 모델 캐시 누적) = 12건. 추후 Day 7 ServiceMonitor·Day 8 HPA·Day 9 부하 OOM 항목 추가 예정)_
+- [~] §10 🚨 자주 하는 실수 _(Day 1: Qdrant/StatefulSet 3건 + Day 2: 인덱싱 3건 + Day 3: Argo/RBAC 3건 + Day 4: vLLM/GPU 3건(노드 풀 taint 누락·served-model-name 불일치·PVC 모델 캐시 누적) + Day 5: RAG API 3건(e5 query prefix 누락·OpenAI SDK model 누락/422·임베딩 모델 요청별 재로딩) = 15건. 추후 Day 7 ServiceMonitor·Day 8 HPA·Day 9 부하 OOM 항목 추가 예정)_
 - [ ] §11 확장 아이디어 (reranker, 스트리밍, 멀티턴, RAGAS 평가, 30줄)
 - [ ] §12 다음 단계 링크 (Phase 5 또는 본인 업무 적용)
 
@@ -209,11 +211,12 @@
 - [ ] 검증: 학습자 단계 — GKE T4 노드 풀 추가 → vLLM Pod Running + startupProbe 통과 → `curl /v1/models` 응답 `id="microsoft/phi-2"` → OpenAI Python SDK 호출 200 OK + 자연어 응답 → `kubectl rollout restart` 후 60 초 ready (PVC 캐시 효과) → GPU 노드 풀 size=0 축소
 
 ### Day 5 — RAG API 구현 (로컬)
-- [ ] `practice/rag_app/{Dockerfile, requirements.txt, main.py, retriever.py, llm_client.py, prompts.py}`
-- [ ] `practice/rag_app/tests/test_retriever.py`
-- [ ] port-forward로 vLLM·Qdrant 호출하며 로컬 개발
-- [ ] `labs/day-05-rag-api-impl.md`
-- [ ] 검증: `pytest tests/` 통과, 로컬 `uvicorn` `/chat` 200 OK
+- [x] `practice/rag_app/{Dockerfile, requirements.txt, main.py, retriever.py, llm_client.py, prompts.py}` _(Day 5: 6 모듈 + 모듈 분리 원칙(main 조립만, 3 모듈에 위임), e5 query prefix, 한국어 SYSTEM_PROMPT, OpenAI SDK timeout=120, lifespan + app.state 캐싱)_
+- [x] `practice/rag_app/tests/test_retriever.py` _(Day 5: 5+1 mock 케이스 — search/payload/boundary/empty/e5 prefix/non-e5)_
+- [x] port-forward로 vLLM·Qdrant 호출하며 로컬 개발 _(Day 5: 분리 터미널 2 개 + Terminal C 패턴, 백그라운드 변형은 트러블슈팅 #1 에 안내)_
+- [x] `labs/day-05-rag-api-impl.md` _(Day 5: Goal 4/사전조건 6/Step 9/검증 8/정리 2 분기/트러블슈팅 9, .env.example 추가)_
+- [x] lesson.md §1.1 다이어그램 ★ Day 5 ★ 마커 + §2.3 RAG API 분리 4 축 신규 + §3.1 챗봇 호출 흐름 신규 + §4.4 자리표시 + §5 RAG API 구현 노트 6 소절 + §10 자주 하는 실수 #13~#15, architecture.md §1 시퀀스 정밀화 + §3.9 동기 호출 + §3.10 임베딩 모델 로딩 전략 신규 + §7 Day 5 행 + 부록 A Day 5 항목
+- [ ] 검증: 학습자 단계 — `pytest tests/ -v` 6 케이스 PASS + port-forward 2 개 + uvicorn `/chat` 200 OK + sources 3 개(메타 4 종 + score + chunk_id) + 답변에 `[n]` 인용 마커 등장 + `/metrics` 4 메트릭 노출
 
 ### Day 6 — RAG API 클러스터 배포 + Ingress
 - [ ] `manifests/30-rag-api-deployment.yaml`, `31-rag-api-service.yaml`, `40-ingress.yaml`
@@ -260,7 +263,7 @@
 - [x] Day 2 — 임베딩·인덱싱 스크립트 작성, 로컬 테스트 (2026-05-06)
 - [x] Day 3 — 인덱싱 Argo Workflow 클러스터 실행 (2026-05-06)
 - [x] Day 4 — vLLM Deployment + OpenAI 호환 API 호출 검증 (2026-05-07)
-- [ ] Day 5 — RAG API 구현 (retriever + LLM 결합)
+- [x] Day 5 — RAG API 구현 (retriever + LLM 결합) (2026-05-08)
 - [ ] Day 6 — RAG API Deployment + Service + Ingress
 - [ ] Day 7 — ConfigMap/Secret 분리, ServiceMonitor 추가
 - [ ] Day 8 — Grafana 대시보드 + HPA(커스텀 메트릭) 설정
@@ -269,9 +272,9 @@
 
 산출물 4종 관점 체크 (캡스톤은 단일 토픽이지만 4종을 만족해야 함):
 
-- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건 추가) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건 추가, 총 9건) / Day 4: §1.1 ★ Day 4 ★ 마커·§2.1 vLLM 분리 4 축·§4.3 vLLM Deployment + 결정 박스 4개·§10 (3건 추가, 총 12건))_
-- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건 추가(49·50·51) + practice/pipelines/indexing/README.md Day 3 단락 갱신 / Day 4: manifests 4건 추가(20·21·22·23))_
-- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4 작성 완료, README 갱신 완료, day-05~day-10 미작성)_
+- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건 추가) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건 추가, 총 9건) / Day 4: §1.1 ★ Day 4 ★ 마커·§2.1 vLLM 분리 4 축·§4.3 vLLM Deployment + 결정 박스 4개·§10 (3건 추가, 총 12건) / Day 5: §1.1 ★ Day 5 ★ 안내 단락·§2.3 RAG API 분리 4 축·§3.1 챗봇 호출 흐름 7 단계·§4.4 자리표시·§5 RAG API 구현 노트 6 소절·§10 (3건 추가, 총 15건))_
+- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건 추가(49·50·51) + practice/pipelines/indexing/README.md Day 3 단락 갱신 / Day 4: manifests 4건 추가(20·21·22·23) / Day 5: practice/rag_app/ 9건 신규(Dockerfile·requirements.txt·main.py·retriever.py·llm_client.py·prompts.py·tests/__init__.py·tests/test_retriever.py·.env.example))_
+- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4·5 작성 완료, README 갱신 완료, day-06~day-10 미작성)_
 - [ ] **GPU 클러스터 검증** — Day 10 통합 검증 + GKE 클러스터 삭제 로그
 
 ---
@@ -404,3 +407,10 @@ gcloud container clusters delete capstone --zone us-central1-a --quiet
 - **2026-05-07 (Day 4)** — **lesson.md §2 분할 결정**: 캡스톤 plan §6 의 §2(왜 이렇게 분리했는가) 를 Day 4 에서 vLLM 분리 4 축으로 본격 작성. §2.1 (vLLM 분리, Day 4 작성 완료) / §2.2 (인덱싱 분리, §3.6 한 줄 인용) / §2.3 (RAG API 분리, Day 5~6 TBD) / §2.4 (단일 Namespace, Day 1 §1.3 인용) 로 4 분할. 향후 Day 5/6 작성 시 §2.3 만 채우면 §2 완성.
 - **2026-05-07 (Day 4)** — **cold start 운영적 의미를 architecture.md §3.8.2 로 분리**: vLLM cold start 5~10 분이 *Pod 라이프사이클 한 번에 한 번* 만 발생하는 latency 임을 §1 시퀀스 본문 단락에 한 문단 추가. 더 깊은 결정 노트(rolling update 가용성, Day 6 Helm 차트 values 매핑) 는 §3.8.2 로. Day 6 Helm 차트 작성 시 `values-prod.yaml.replicas: 2` + PVC 캐시 + startupProbe 길이 3 가지가 함께 있어야 사용자 체감 다운타임 0 이라는 결정.
 - **2026-05-07 (Day 4)** — **자주 하는 실수 3 건 추가 (Day 4 — vLLM/GPU)**: ⑩ T4 노드 풀 taint 누락 (gcloud `--node-taints` 누락 시 vLLM Pod 가 CPU 노드에 schedule), ⑪ served-model-name 불일치 (Day 6 시점 발견되는 후속 문제 — Day 4 시점에 미리 강조), ⑫ 모델 캐시 PVC 디스크 누적 (Day 9 모델 교체 후 두 모델 캐시 누적). Phase 4-3 의 자주 하는 실수 1·2·3번(GPU 누락/`/dev/shm`/0.95+) 은 매니페스트가 *해결된 상태* 로 작성됐으므로 한 줄 링크로 처리 — 본 캡스톤에서 학습자가 처음부터 매니페스트를 작성할 때만 재현됨.
+- **2026-05-08 (Day 5)** — **모듈 분리 4 개 (사용자 승인)**: 단일 `rag_app.py` 골격(skill 템플릿 163 줄) → `main.py(140) + retriever.py(120) + llm_client.py(75) + prompts.py(70)` 4 모듈로 분리. 결정 근거는 *각 외부 의존성(Qdrant + vLLM)의 단위 테스트를 분리하기 위함* — Phase 4-3 의 단일 fastapi_app.py 패턴과 의도적으로 다름. main.py 는 *조립* 만 담당하고 실 로직은 3 모듈에 위임 → 80~140 줄로 유지 가능. lesson.md §5.1 모듈 분리 원칙 표 + architecture.md §3.10 임베딩 캐싱 전략에 기록.
+- **2026-05-08 (Day 5)** — **§2.3 RAG API 분리 4 축 채택 (사용자 승인)**: §2.1 vLLM 분리 4 축(스케일/라이프사이클/메트릭/모델 교체 빈도) 의 *거울 짝* 으로 RAG API 측 4 축(배포 사이클/상태성/메트릭 축/의존성 방향) 을 작성. §2.1 과 같은 4 분 구조를 두 컴포넌트 시점에서 한 번씩 본 결과로 §2 전체가 4+1+1+1 결정 노트로 완성됨. 추후 Day 5~6 에서 Day 6 RAG API 매니페스트(30~33) 작성 시 §2.3 결정을 그대로 인용.
+- **2026-05-08 (Day 5)** — **한국어 SYSTEM_PROMPT 채택 (사용자 승인)**: phi-2 가 영어 강한 SLM 이지만 본 캡스톤 인덱싱 대상 자료가 한국어이므로 답변 언어 일관성 우선. prompts.py 의 SYSTEM_PROMPT 가 4 가지를 강제: (1) 역할 — Kubernetes/ML 전문가, (2) 한국어 답변, (3) Context 한정 (환각 차단), (4) [번호] 인용 마커. lesson.md §5.4 결정 근거 명시. 영어 prompt 비교는 §11 확장 아이디어로 미룸.
+- **2026-05-08 (Day 5)** — **port-forward 분리 터미널 패턴 (사용자 승인)**: Day 5 lab 은 Terminal A(Qdrant 6333) + Terminal B(vLLM 8000) + Terminal C(uvicorn) 3 터미널 패턴 채택. Day 2 의 백그라운드 `&` 패턴과 다른 결정 근거: *각 endpoint 의 로그가 독립 추적 가능* + *Ctrl+C 명시적 종료* 로 디버깅 친화. 백그라운드 변형은 lab 트러블슈팅 #1 에 한 줄 변형으로만 안내.
+- **2026-05-08 (Day 5)** — **테스트 전략 — Qdrant mock 위주 + 라이브는 lab 검증 (사용자 승인)**: tests/test_retriever.py 5+1 케이스가 모두 `MagicMock` 으로 Qdrant client + 임베딩 모델 주입. CI 친화적이고 port-forward 없이 통과. 라이브 검증은 lab Step 4(retriever 단독 호출) + Step 8(`/chat` curl) 두 곳으로 분리. QdrantRetriever.__init__ 가 `embed_model` / `qdrant_client` 인자를 옵셔널로 받아 의존성 주입 가능하게 한 것이 결정의 핵심. lesson.md §5.6 + architecture.md §3.10 에 근거 기록.
+- **2026-05-08 (Day 5)** — **임베딩 모델 lifespan 캐싱 (사용자 승인)**: 3 옵션(module singleton / FastAPI lifespan + app.state / class instance + Depends) 중 *lifespan + app.state* 채택. 결정 근거 — pytest 단위 테스트에서 `SentenceTransformer(...)` 실 호출을 우회하기 위함 (130MB 다운로드 + 1~2 분 대기 회피). production 코드는 두 인자 생략 시 lifespan 안에서 1 회 생성, 테스트 코드는 `embed_model=MagicMock()` 주입으로 같은 코드 경로를 공유. architecture.md §3.10 에 3 옵션 비교 표.
+- **2026-05-08 (Day 5)** — **자주 하는 실수 3 건 추가 (Day 5 — RAG API)**: ⑬ e5 query prefix 누락 — Day 2 인덱싱(`passage:`) 와 Day 5 검색(`query:`) 의 prefix 가 짝을 이뤄야 recall 정상. 누락 시 top_k=3 인데 0 건 또는 무관한 청크. ⑭ vLLM `model` 필드 누락 또는 served-model-name 불일치 → 422/404 — Day 4 §10 #11 의 후속 표면. ⑮ 임베딩 모델 요청별 재로딩 → p99 폭증 (Day 2 §10 #5 의 다른 표면 — 인덱싱은 batch 시간 / RAG API 는 사용자 응답 latency). 총 자주 하는 실수 12 → 15 건.
