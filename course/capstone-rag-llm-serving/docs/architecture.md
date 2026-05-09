@@ -576,6 +576,91 @@ Events:
 
 ---
 
+## 3.14 부하 테스트 + 튜닝 결정 노트 (Day 9 핵심)
+
+Day 8 의 `hey 60s c=8` 한 번 발사가 *체험형 부하* 였다면, Day 9 는 c=8/16/32 3 단계 측정 + `--gpu-memory-utilization` 0.85 → 0.90 안전 상향 1 회전으로 *본격 튜닝* 을 다룹니다. 본 절은 그 결정 4 가지를 기록합니다.
+
+### 3.14.1 부하 변화 축 — 동시성 c 단계만 (페이로드 1 종 고정)
+
+부하 테스트의 변수는 일반적으로 *(a) 동시성 c, (b) 페이로드 길이, (c) 두 축 결합* 3 가지입니다. 캡스톤 Day 9 는 (a) 만 채택했습니다.
+
+| 옵션 | 학습 효과 | lab 시간 | 결정 |
+|---|---|---|---|
+| **(a) 동시성 c 단계 (8 → 16 → 32)** ✅ | KV cache 포화 메커니즘에 집중 — *왜 0.85 가 limiting factor 인가* 가 직접 보임 | ~25 분 | **채택** |
+| (b) 페이로드 길이 (짧은 q + 긴 q) | continuous batching 이 *질문 길이 분산* 에 강한 점 직접 시연 | ~25 분 | 부분 채택 — README §1 의 vLLM 본질 설명에서 인용. lab 에서는 미적용 |
+| (c) 두 축 결합 | 데이터 풍부 | ~50 분 | 미채택 — *1 회전 튜닝* 학습 가치와 균형 무너짐 |
+
+**(a) 채택 근거**:
+- *동시성 → KV cache* 인과 관계가 직관적 — c 가 늘면 동시 처리 요청 수가 늘고 → KV cache 풀 사용률이 상승 → 어느 시점부터 waiting > 0
+- 페이로드 1 종 고정으로 *측정 노이즈 최소화* — Day 9 의 핵심은 0.85 → 0.90 *튜닝의 효과를 분리* 하는 것이지 vLLM 의 모든 동작을 다루는 것이 아님
+- (b) 의 *페이로드 길이 분산 효과* 는 §11 확장 아이디어의 streaming / multi-turn 으로 미루는 것이 자연스러움
+
+c=8 / 16 / 32 의 선택 근거는 phi-2 + T4 16GB 의 *KV cache 포화 임계점* 이 보통 c=12~24 사이에 있다는 경험치. c=8 은 baseline, c=16 은 임계점, c=32 는 *명시적 포화* 로 가는 3 단계입니다.
+
+### 3.14.2 `--gpu-memory-utilization` 튜닝 1 회전 — 0.85 → 0.90 안전 상향
+
+캡스톤 Day 4 의 매니페스트 기본값이 0.85 (Phase 4-3 권장). Day 9 가 *유일한 튜닝 대상* 으로 선택한 옵션입니다.
+
+| 옵션 | 학습 효과 | 위험 | 결정 |
+|---|---|---|---|
+| **(a) 0.85 → 0.90 안전 상향** ✅ | KV cache 풀 +11% 확장 → continuous batching 효과 직접 시연 | 거의 없음 (T4 검증 한계 안쪽) | **채택** |
+| (b) 0.85 → 0.95 OOM 체험 | *왜 0.85 가 권장값인가* 의 운영적 실감 | KV cache OOM CrashLoop / Pod 재시작 / GPU 노드 5 분 점유 추가 | 미채택 — 대신 §10 자주 하는 실수 #25 로 *이론 표면화* |
+| (c) 0.95 → 롤백 → 0.90 두 회전 | (a) + (b) 효과 합산 | (b) 의 위험 + lab 시간 +30 분 | 미채택 — capstone-plan §7 의 "1 회전 튜닝" 명시와 어긋남 |
+
+**(a) 채택 근거**:
+- *학습 안정성 우선* — Day 9 lab 이 OOM 으로 중단되면 학습자가 0.85 로 직접 복원해야 하고 그 사이 GPU 노드 비용이 발생
+- 0.95+ 위험은 *이론* 으로만 다뤄도 충분 — practice/llm_serving/README.md §3.1 권장값 매트릭스 + §10 자주 하는 실수 #25 의 진단·해결 단계 (OOMKilled 이벤트 / `kubectl logs --previous` / 즉시 patch 복원) 으로 자가 복구 가능
+- 호기심으로 0.95 를 시도하는 학습자도 자가 복구 가능한 *체험형 학습* 보호장치가 마련됨
+
+**0.85 → 0.90 의 효과 예측 (T4 16GB + phi-2)**:
+- KV cache 풀: 7.2GB → 8.0GB (+11%)
+- `vllm:num_requests_running` 평균: baseline 8~12 → after 10~14 (continuous batching 동시 처리 폭 ↑)
+- `chat p95 latency`: c=16/32 에서 10~20% 감소 기대
+- `RPS`: c=32 에서 15~25% 증가 기대
+
+Day 9 lab Step 9 의 before/after 비교 표가 본 예측을 학습자 환경에서 검증합니다.
+
+### 3.14.3 측정 지표 — chat 단계별 분해 + vLLM 동시 처리 + KV cache 사용률
+
+부하 테스트 결과를 *낙관적으로 평가하지 않고 정확히 분리* 하기 위해 5 지표를 동시 캡처합니다.
+
+| 지표 | 출처 | PromQL | 정상 범위 | 진단 가치 |
+|---|---|---|---|---|
+| RAG p95 chat latency | RAG API (Day 5) | `histogram_quantile(0.95, sum(rate(rag_chat_latency_seconds_bucket[1m])) by (le))` | 1~3s | end-to-end SLO. *200 OK 응답 분포의 p95* 임을 인지 (자주 하는 실수 #27) |
+| RAG p95 retrieve latency | 동일 | `..._retrieve_latency_seconds_bucket[1m]` | 50~200ms | retriever 병목 분리 — Qdrant 한계 진단 |
+| RAG p95 llm latency | 동일 | `..._llm_latency_seconds_bucket[1m]` | 0.8~2.5s | vLLM 병목 분리 — `vllm:e2e_request_latency_seconds` 와 교차 검증 |
+| vLLM running 평균 | vLLM (Day 7) | `avg_over_time(vllm:num_requests_running[1m])` | 8~16 | continuous batching 효과 측정 — 1~2 면 부하 부족 또는 RAG API HPA 한계 |
+| vLLM KV cache 사용률 | 동일 | `avg_over_time(vllm:gpu_cache_usage_perc[1m])` | 0.85~0.95 | 0.95+ = 자주 하는 실수 #25 위험 |
+
+**병목 진단 의사결정 트리** (자주 하는 실수 #26 예방):
+
+```
+chat_p95 가 SLO 초과
+├── chat_p95 ≈ retrieve_p95 + llm_p95 + 0.1~0.3s 합산?
+│     ├── retrieve_p95 > 500ms?    → Qdrant 부하 (Day 7 §6.3 부재 / Day 10 도입)
+│     └── llm_p95 ≈ chat_p95 의 80% ↑?  → vLLM 병목
+│           ├── num_requests_waiting > 0 지속?  → KV cache 한계 (0.90 상향 또는 더 큰 GPU)
+│           ├── gpu_cache_usage_perc > 0.95?    → 자주 하는 실수 #25 위험
+│           └── num_requests_running 4 이하?    → 부하 부족 또는 RAG API HPA 한계
+└── 합산이 안 맞음 (chat_p95 >> retrieve + llm)?  → RAG API 자체 (FastAPI 동기 호출 §3.9)
+```
+
+학습자가 chat_p95 만 보고 *"RAG API 가 느리다"* 또는 *"vLLM 이 느리다"* 로 단정하면 잘못된 튜닝 방향을 잡습니다 (자주 하는 실수 #26). 5 지표 *동시* 캡처가 본 트리의 입력입니다.
+
+### 3.14.4 `--max-num-batched-tokens` 미도입 결정 (Phase 5 / capstone v2 미룸)
+
+vLLM 의 *동시 배치 토큰 수 상한* 은 `--max-num-batched-tokens` 옵션으로 조정합니다. 본 캡스톤 Day 9 가 다루지 않는 이유:
+
+- **2 회전 튜닝** — `--max-num-batched-tokens` 의 적정값은 *모델 / 평균 prompt 길이 / GPU VRAM* 의 함수라 워크로드별 프로파일링이 필요. 한 번에 결정할 수 있는 값이 아니어서 *부하 테스트 → 측정 → 조정 → 재측정* 의 루프를 최소 2 회전 거쳐야 함
+- **캡스톤은 1 회전 튜닝** — Day 9 의 학습 가치는 *튜닝 1 회전이 메트릭 어떻게 움직이는가* 의 *체감* 이지, vLLM 최적화의 모든 표면을 다루는 것이 아님
+- **Phase 5 / capstone v2 후보** — 캡스톤 v2 에서 `--enable-prefix-caching` (시스템 프롬프트 반복 효과) 와 함께 도입 검토. 그 시점이면 Day 9 의 5 지표 캡처 패턴을 그대로 재사용 가능
+
+**기본값 유지 결정**: vLLM 0.6.x 의 `--max-num-batched-tokens` 기본값 (모델/dtype 자동 결정) 을 그대로 두고 캡스톤 매니페스트에서 명시하지 않습니다. 향후 도입 시 `practice/llm_serving/README.md` §1 의 args 표에 7 번째 항목으로 추가하고 본 §3.14.4 를 *적용 노트* 로 갱신.
+
+> 본 결정은 Day 10 Helm 차트의 `values.yaml` 에서도 `gpuMemoryUtilization` 만 노출하고 `maxNumBatchedTokens` 은 제외하는 형태로 일관됩니다.
+
+---
+
 ## 4. PVC 5Gi 산정 근거
 
 | 항목 | 값 | 비고 |
@@ -653,7 +738,7 @@ Day 7 의 ServiceMonitor 24/34 가 *실제로 수집 중인* 메트릭 라벨로
 | Day 6 ✅ | §3.11 Ingress 라우팅 결정 노트 신규 | §3.11.1 GCE Ingress vs nginx-ingress vs LoadBalancer Service 3 옵션 비교, §3.11.2 nip.io host 채택 근거, §3.11.3 timeout 조정을 Day 8 BackendConfig 로 미루는 결정, §3.11.4 Phase 5 GitOps 와의 호환 (Cloud Armor / CDN / IAP) |
 | Day 7 ✅ | §3.12 모니터링 결정 노트 신규 + §5 메트릭 표 실측값 갱신 + 부록 A Day 7 항목 | §3.12.1 release 라벨 매칭 2 단계 (Prometheus CR ↔ ServiceMonitor ↔ Service), §3.12.2 ConfigMap 변경 시 재시작 4 옵션 비교(수동/checksum/Reloader/파일 마운트), §3.12.3 Qdrant ServiceMonitor 처리 4 옵션 비교(부록·정식·Day 8·미적용), §3.12.4 RBAC 분리의 Phase 5 GitOps + ESO 운영 가치 |
 | Day 8 ✅ | §3.13 HPA 결정 노트 신규 + §5 메트릭 표 ◉/★ 마킹 + 부록 A Day 8 항목 | §3.13.1 vLLM HPA 메트릭 3 옵션 비교(running/+waiting/gpu_cache_usage), §3.13.2 RAG API HPA 가 왜 필요한가 + averageValue=10 산정 근거, §3.13.3 behavior 비대칭(scaleUp 0s, scaleDown 300s) cold start 보호 + 떨림 방지, §3.13.4 T4 노드 풀 maxReplicas=2 의 *체험형 학습 설계* (Pending Pod 정상 동작) |
-| Day 9 | §6 트레이드오프 보강 | 부하 테스트 결과 + `--gpu-memory-utilization` 튜닝 1 회전 |
+| Day 9 ✅ | §3.14 신규 4 소절 + 부록 A Day 9 항목 | §3.14.1 부하 변화 축 결정(c 단계만 vs 페이로드 길이 vs 두 축 결합), §3.14.2 `--gpu-memory-utilization` 0.85→0.90 안전 상향 1 회전 결정(0.95 OOM 체험은 §10 #25 로 이론 표면화), §3.14.3 측정 지표 5 종 + 병목 진단 의사결정 트리(자주 하는 실수 #26 예방), §3.14.4 `--max-num-batched-tokens` 미도입(Phase 5 / capstone v2 미룸) |
 | Day 10 | §6 + Helm 차트 구조 결정 노트 | 한 줄 배포 + ConfigMap checksum 자동화 + Qdrant ServiceMonitor 정식 도입 |
 
 ---
@@ -701,6 +786,11 @@ Day 1~3 에 이 문서가 다루는 매니페스트는 다음과 같습니다.
 - [`../manifests/60-prometheus-adapter-values.yaml`](../manifests/60-prometheus-adapter-values.yaml) — prometheus-adapter Helm values (rules.custom 2 규칙 — RAG `_total` → `_requests_per_second` rate 변환, vLLM `vllm:` → `vllm_` 콜론 별칭. Prometheus URL = `prom-kube-prometheus-stack-prometheus.monitoring.svc:9090`)
 - [`../manifests/61-grafana-rag-dashboard.yaml`](../manifests/61-grafana-rag-dashboard.yaml) — Grafana 대시보드 ConfigMap (namespace=`monitoring`, `grafana_dashboard: "1"` 라벨로 sidecar 자동 import, 4 패널 — chat req/s status별, latency p95 단계별 분해 chat/retrieve/llm, vLLM running vs waiting, GPU KV cache 사용률 gauge)
 
+**Day 9** (부하 테스트 자산 — 매니페스트 신규 0 건, 코드/문서만)
+
+- [`../practice/llm_serving/load_test.sh`](../practice/llm_serving/load_test.sh) — hey 기반 부하 테스트 스크립트 (c=8/16/32 3 단계 순차, `LABEL=baseline|after` 환경변수로 결과 파일 분리, `results/${LABEL}-c${C}.txt` 디스크 저장, hey 출력에서 p95/p99/200 OK 추출 한 줄 요약, `SINGLE=1 CONCURRENCY=N` 으로 단일 동시성 재측정 가능)
+- [`../practice/llm_serving/README.md`](../practice/llm_serving/README.md) — vLLM 운영 노트 (§1 args 6 종 캡스톤 현재값 + Phase 4-3 §1-4 인용 / §2 cold start 와 PVC 캐시 / §3 `--gpu-memory-utilization` 튜닝 가이드 + GPU 권장값 매트릭스 / §4 메트릭 해석 + 병목 진단 의사결정 트리 / §5 load_test.sh 사용법 + before/after 비교 표 템플릿)
+
 **Day 5** (코드 모듈 — Day 6 에서 매니페스트 30~33 으로 패키징됩니다)
 
 - [`../practice/rag_app/main.py`](../practice/rag_app/main.py) — FastAPI 진입점, lifespan + app.state 캐싱, `/chat` `/healthz` `/ready` `/metrics`, Pydantic 스키마(ChatRequest/ChatResponse/Source), Prometheus 메트릭 4 종
@@ -726,3 +816,6 @@ Day 1~3 에 이 문서가 다루는 매니페스트는 다음과 같습니다.
 - `course/phase-3-production/03-autoscaling-hpa/manifests/prometheus-adapter/values.yaml` (Day 8 — rules.custom 의 4 단계 흐름(seriesQuery / resources.overrides / name / metricsQuery) 그대로 계승. 캡스톤 변경점: 규칙 1 추가(`vllm:` 콜론 별칭 처리), Prometheus URL = `prom-kube-prometheus-stack-prometheus.monitoring.svc:9090` 그대로)
 - `course/phase-3-production/02-prometheus-grafana/manifests/grafana-dashboards/sentiment-api-dashboard.json` (Day 8 — JSON 구조(__inputs/__requires/templating/panels) 골격 계승. 캡스톤 변경점: title `Sentiment API` → `RAG-LLM Capstone`, 4 패널 PromQL 을 RAG/vLLM 메트릭으로 교체, gauge 패널 추가)
 - `course/phase-3-production/02-prometheus-grafana/manifests/kube-prometheus-stack/values.yaml` (Day 7 에서 그대로 사용 — Day 8 sidecar 라벨 매칭 `grafana_dashboard: "1"` 의 동작 근거)
+- `.claude/skills/k8s-ml-course-author/assets/templates/practice/load_test.sh.tmpl` (Day 9 — 55 줄 단일 c 호출 → 본 캡스톤에서 `run_one(c, label)` 함수화 + c=8/16/32 순차 + `LABEL` 환경변수로 결과 파일 분리 + 디스크 저장 + 한 줄 요약 추출, TARGET_URL `predict` → `/chat`, 페이로드 RAG ChatRequest)
+- `course/phase-4-ml-on-k8s/03-vllm-llm-serving/lesson.md` §1-4 ~ §1-6 (Day 9 — args 5 종 표 + cold start 4 단계 + 메트릭 6 종 표 인용. 캡스톤에서는 args 6 종(`--served-model-name` 추가, Day 4 결정) + cold start 의 PVC hit 60 초 단축 + 메트릭 *부하 테스트 관점 재해석* (running/waiting/gpu_cache_usage_perc 가 *부하 변화에 따라 어떻게 움직이는가*) 으로 갱신. practice/llm_serving/README.md §1, §2, §4 에 위치)
+- `course/capstone-rag-llm-serving/labs/day-08-grafana-hpa.md` Step 6 (Day 9 — `hey 60s c=8` 단일 발사 패턴 → c=8/16/32 3 단계 순차 + before/after 두 번 반복 = 6 회 hey 호출. 페이로드 동일 유지로 결과 비교 가능. labs/day-09-load-test-tuning.md Step 3~5/8 에 위치)

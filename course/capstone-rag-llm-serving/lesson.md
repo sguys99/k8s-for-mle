@@ -1747,7 +1747,7 @@ watch -n 5 kubectl get hpa,pods -n rag-llm
 
 ## 10. 🚨 자주 하는 실수
 
-<!-- 캡스톤 진행 중 발견 시 누적 추가합니다. 현재 Day 1(Qdrant/StatefulSet 3건) + Day 2(인덱싱 3건) + Day 3(Argo 3건) + Day 4(vLLM/GPU 3건) + Day 5(RAG API 3건) + Day 6(Ingress/배포 3건) + Day 7(ConfigMap/Secret/ServiceMonitor 3건) + Day 8(HPA/Grafana/adapter 3건) = 24건. -->
+<!-- 캡스톤 진행 중 발견 시 누적 추가합니다. 현재 Day 1(Qdrant/StatefulSet 3건) + Day 2(인덱싱 3건) + Day 3(Argo 3건) + Day 4(vLLM/GPU 3건) + Day 5(RAG API 3건) + Day 6(Ingress/배포 3건) + Day 7(ConfigMap/Secret/ServiceMonitor 3건) + Day 8(HPA/Grafana/adapter 3건) + Day 9(부하 테스트/튜닝 3건) = 27건. -->
 
 **Day 1 — Qdrant / StatefulSet**
 
@@ -1809,7 +1809,15 @@ watch -n 5 kubectl get hpa,pods -n rag-llm
 
 24. **hey 부하 후 RAG API 는 scale 했는데 vLLM 은 그대로 → 잘못된 결론 "HPA 가 안 동작한다"** — 캡스톤의 GPU 노드 풀 size=1 환경에서 vLLM HPA maxReplicas=2 로 두면 *두 번째 Pod 가 Pending* 되고, *그 동안 첫 번째 Pod 의 num_requests_running 이 8 이하라면 scale-out 자체가 발동하지 않습니다*. 학습자가 "HPA 가 깨졌다" 로 오인할 수 있으나 *정상 동작* 입니다. **증상**: `kubectl get hpa vllm` 의 TARGETS=`5/8` (8 미만) 인데 부하는 분명 도달 중. RAG API replicas 만 2→4 로 증가, vLLM 은 1 유지. **원인 진단**: 부하가 RAG API 4 Pod 에 분산되어 *각 Pod 가 vLLM 으로 던지는 RPS* 가 절반으로 떨어짐 → vLLM 1 Pod 가 충분히 소화. 이 자체가 *시스템이 잘 설계된 결과* (vLLM 의 continuous batching). **해결**: ① 의도된 동작이라면 그대로 두고 RAG API 의 latency 증가만 관측. ② vLLM scale-out 을 강제 검증하려면 hey 의 동시 접속 수(`-c`) 를 8→32 로 증가하거나 RAG API replicas 를 minReplicas=4 로 고정해 vLLM 으로 가는 RPS 집중. ③ T4 노드 풀 size 를 2 로 확장 — `gcloud container node-pools resize gpu-pool --num-nodes=2 --cluster capstone --zone <zone>` 후 재테스트. lesson.md §7 결정 박스 ④ 와 architecture.md §3.13.4 인용.
 
-<!-- TBD: Day 9(부하 테스트 OOM, gpu-memory-utilization 튜닝 후 OOM), Day 10(Helm checksum/config 동기화) 관련 추가 예정. -->
+**Day 9 — 부하 테스트 / vLLM 튜닝**
+
+25. **`--gpu-memory-utilization` 0.95+ 설정 → KV cache OOM CrashLoop** — Phase 4-3 자주 하는 실수 3번의 캡스톤 표면. Day 9 부하 테스트 도중 학습자가 *호기심으로* 또는 *0.95 면 더 많은 동시 처리* 라고 짐작해 0.95 이상으로 patch 하면, vLLM 이 *시작 시* GPU 메모리의 95%를 사전 예약하다 모니터링 agent / NVIDIA driver / 컨테이너 런타임과 충돌해 *시작도 못 합니다*. **증상**: `kubectl get pods -n rag-llm -l app=vllm` 의 STATUS 가 `CrashLoopBackOff`, `kubectl describe pod vllm-xxxx -n rag-llm` 의 *Last State: Terminated, Reason: OOMKilled* 또는 `Init: Error`. `kubectl logs deployment/vllm -n rag-llm --previous` 에 `torch.cuda.OutOfMemoryError: CUDA out of memory` 또는 vLLM 측 `Failed to initialize the cache engine`. **해결**: ① 즉시 — `kubectl patch deployment vllm -n rag-llm --type='json' -p='[{"op":"replace","path":"/spec/template/spec/containers/0/args/2","value":"--gpu-memory-utilization=0.85"}]'` 로 0.85 로 복원. ② 가용 상향 시 0.90 까지만 (캡스톤 T4 16GB 검증 한계) — practice/llm_serving/README.md §3.1 권장값 매트릭스. ③ 그 이상 동시 처리가 필요하면 더 큰 GPU(L4 24GB / A10G 24GB) 또는 maxReplicas 와 GPU 노드 풀 size 동반 확장 (자주 하는 실수 #24 해소). Day 9 가 0.85 → 0.90 *안전 상향만* 시연하는 이유가 본 위험 — 이론은 표면화하되 lab 에서는 재현하지 않음.
+
+26. **부하 테스트 시 chat_latency 만 보고 retrieve_latency / llm_latency 단계별 분해 누락 → 병목 컴포넌트 오진단** — Day 5 의 RAG API 가 4 메트릭(`rag_chat_latency_seconds` / `rag_retrieve_latency_seconds` / `rag_llm_latency_seconds` + `rag_chat_total`) 을 *단계별로 분해해 노출* 한 이유는 부하 테스트 시 *어느 컴포넌트가 병목인가* 를 즉시 분리하기 위함입니다. 학습자가 chat_latency p95 만 보고 "RAG API 가 느리다" 또는 "vLLM 이 느리다" 고 단정하면 잘못된 튜닝 방향을 잡습니다. **증상**: chat p95=4.5s 를 보고 RAG API replicas 를 6→10 으로 늘렸으나 변화 없음 (실제 병목은 vLLM). 또는 vLLM args 를 0.85 → 0.90 으로 올렸으나 chat p95 는 그대로 (실제 병목은 Qdrant). **해결**: ① Step 5 의 PromQL 2 종을 *항상 동시 캡처* — `histogram_quantile(0.95, sum(rate(rag_retrieve_latency_seconds_bucket[1m])) by (le))` 와 `histogram_quantile(0.95, sum(rate(rag_llm_latency_seconds_bucket[1m])) by (le))`. ② 합산 검산 — `chat_p95 ≈ retrieve_p95 + llm_p95 + 약 0.1~0.3s overhead` 가 일치하는지. ③ 외부 메트릭 교차 — `llm_p95` 가 vLLM 자체의 `vllm:e2e_request_latency_seconds` p95 와 거의 같은지. ④ 의사결정 트리 — practice/llm_serving/README.md §4.3 의 ASCII 트리를 부하 테스트 직후 *체크리스트* 로 사용. Day 8 의 4 패널 Grafana 대시보드 ② 패널이 본 분해를 시각화.
+
+27. **hey 의 `Successful responses` (200 OK) 만 보고 timeout / 5xx 무시 → 실제 사용자 체감보다 낙관적 평가** — hey 출력의 `Summary` 섹션은 `Total: 60.01 secs` 와 `Requests/sec: 22.34` 만 보면 시스템이 잘 동작한 것처럼 보이지만, `Status code distribution` 섹션의 `[200] 1320 responses` 와 `Error distribution` 섹션의 `[40] Connection timeout` 또는 `[15] EOF` 같은 항목을 *동시* 보지 않으면 *진짜 RPS* 와 *진짜 latency* 를 잘못 산출합니다. **증상**: hey 출력의 RPS 는 22 인데 학습자가 "초당 22 명을 처리한다" 로 결론 → 운영 배포 후 사용자의 5%가 *영원히 응답을 못 받는* (timeout) 상태. p95 latency 도 *200 OK 응답들 사이의 p95* 라서 timeout 은 latency 분포에 *포함되지 않음* — 실제 사용자 체감 p95 는 timeout 시간(보통 `--timeout` 기본 20s) 까지 포함해야 정확. **해결**: ① 결과 보고 시 *항상* `Status code distribution` + `Error distribution` 섹션을 함께 인용 — practice/llm_serving/load_test.sh 의 한 줄 요약에 `200_ok=N` 으로 카운트 노출. ② SLO 정의를 *200 OK 의 p95 + 99% availability* 두 축으로 — 캡스톤 RAG SLO 예시: chat p95 < 3s 이면서 200 OK 비율 > 99%. ③ hey 의 `-t` 옵션으로 timeout 명시 (`-t 30` = 30s 타임아웃) 후 `Error distribution` 행 수 확인. ④ Grafana 패널 ① (chat req/s status별) 의 *200 vs 5xx 색상 분리* 를 부하 도중 실시간 관찰. Day 9 c=32 단계가 본 위험을 직접 시연 — 일부 timeout 이 *의도된 결과* 임을 학습자가 인지해야 자주 하는 실수 #3 트러블슈팅과 일관.
+
+<!-- TBD: Day 10(Helm checksum/config 동기화, 정리 누락 비용 누수) 관련 추가 예정. -->
 
 ---
 
