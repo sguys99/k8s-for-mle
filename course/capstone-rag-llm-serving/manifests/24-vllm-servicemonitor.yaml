@@ -1,0 +1,50 @@
+# 출처: course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-servicemonitor.yaml
+#
+# 캡스톤 Day 7 — Phase 4-3 vllm-servicemonitor 를 캡스톤 컨벤션으로 이식. 5 가지 변경:
+#   ① name: vllm-phi2 → vllm                 (Day 4 결정 — 모델명 종속 제거)
+#   ② namespace: rag-llm 추가                  (캡스톤 단일 namespace)
+#   ③ labels {phase, topic} 제거 → {app, component} 캡스톤 컨벤션 + release 추가
+#   ④ release: kube-prometheus-stack → release: prom
+#      (Phase 3-02 패턴과 일관 — `helm install prom prometheus-community/kube-prometheus-stack`)
+#   ⑤ selector.matchLabels: app=vllm-phi2 → app=vllm
+#      (Day 4 매니페스트 22-vllm-service.yaml 의 라벨과 매칭)
+#
+# kube-prometheus-stack 의 Prometheus 가 본 ServiceMonitor 를 watch 해 자동으로 vllm Service 의
+# /metrics 를 스크래핑 대상에 추가합니다. *별도 Prometheus 설정 변경 없이* 매니페스트 한 장이면 끝.
+#
+# 사전 조건 (labs/day-07 Step 5 ~ 6):
+#   - kube-prometheus-stack 설치 완료 (`helm install prom prometheus-community/kube-prometheus-stack -n monitoring`)
+#   - Prometheus CRD `servicemonitors.monitoring.coreos.com` 등록됨
+#   - Prometheus CR 의 `serviceMonitorSelector.matchLabels: {release: prom}` 가 본 ServiceMonitor 의 labels 와 매칭
+#     (자주 하는 실수 #19 — release 라벨 누락 시 Targets 페이지에 등장 안 함)
+#
+# vLLM 이 노출하는 핵심 메트릭 (lesson.md §6.2 참고):
+#   - vllm:num_requests_running     : 현재 GPU 에서 동시 처리 중인 요청 수 (continuous batching 효과)
+#   - vllm:num_requests_waiting     : KV cache 부족으로 대기 중인 요청 수 (0 이 아니면 GPU 메모리 부족)
+#   - vllm:gpu_cache_usage_perc     : KV cache 사용률 (0.0 ~ 1.0). 0.9 넘으면 max-model-len 축소 검토
+#   - vllm:time_to_first_token_seconds : TTFT — 사용자 체감 latency 핵심 지표
+#   - vllm:e2e_request_latency_seconds : 요청 전체 latency 분포 히스토그램
+#   - vllm:generation_tokens_total  : 누적 생성 토큰 수 (RPS 와 함께 보면 토큰/sec)
+#
+# Grafana 대시보드는 Day 8 에서 vLLM + RAG 통합으로 작성합니다.
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vllm
+  namespace: rag-llm
+  labels:
+    app: vllm
+    component: llm-serving
+    # kube-prometheus-stack 의 Prometheus CR 이 watch 하는 라벨 — Phase 3-02 와 일관.
+    # Helm install 시 release name 을 `prom` 으로 두면 자동 매칭 (자주 하는 실수 #19).
+    release: prom
+spec:
+  selector:
+    matchLabels:
+      app: vllm                       # 22-vllm-service.yaml 의 라벨과 매칭 — 이 selector 로 Service 1 개를 정확히 잡음
+  endpoints:
+    - port: http                      # Service 의 ports.name 과 일치 (8000 직접 적는 대신 이름 참조)
+      path: /metrics                  # vLLM 의 표준 Prometheus 노출 경로 — 별도 설정 없이 켜져 있음
+      interval: 15s                   # 15 초 간격 — LLM 추론은 분 단위 변동도 흔하므로 15s 면 충분
+      scrapeTimeout: 10s              # 메트릭 페이지 응답 timeout

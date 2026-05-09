@@ -1,0 +1,53 @@
+# 출처:
+#   ① 패턴      → course/phase-2-operations/01-configmap-secret/manifests/configmap.yaml
+#                 (envFrom 일괄 주입 패턴)
+#   ② env 매핑   → course/capstone-rag-llm-serving/manifests/30-rag-api-deployment.yaml
+#                 (Day 6 line 63~75 의 env 6 종을 본 ConfigMap 으로 *그대로* 이전)
+#   ③ 결정 근거  → docs/capstone-plan.md §7 Day 7 (env 6 종 ConfigMap 분리 + Secret 별도)
+#
+# 캡스톤 Day 7 — Day 6 매니페스트 30 의 env 6 종(QDRANT_URL/QDRANT_COLLECTION/EMBED_MODEL/
+# LLM_BASE_URL/LLM_MODEL/TOP_K) 중 *비밀이 아닌 6 개* 를 단일 ConfigMap 으로 분리합니다.
+# HF 토큰만 33-rag-api-secret.yaml 로 이동합니다.
+#
+# 왜 단일 ConfigMap 인가 (lesson.md §4.8 결정 박스 ①):
+#   ① 6 키 모두 RAG API 한 컴포넌트 전용 — RBAC 분리 이득 없음
+#   ② Phase 2-01 §1-2 envFrom 일괄 패턴과 일관 (Deployment 30 의 env 6 줄 → envFrom 1 블록)
+#   ③ ConfigMap 을 QDRANT 관련/vLLM 관련 등으로 쪼개면 envFrom 블록만 늘어 매니페스트 비대
+#
+# ⚠ ConfigMap 변경 후 Pod 가 *자동 재시작되지 않습니다* (lesson.md §4.8 결정 박스 ④, §10 자주 하는 실수 #20).
+#   변경 후 반드시 `kubectl rollout restart deployment/rag-api -n rag-llm` 으로 명시적 재기동.
+#   Day 10 Helm 차트의 `checksum/config` annotation 으로 자동화 예정.
+#
+# 키 명명 규칙: 환경변수명과 *완전 동일* — Deployment 30 이 `envFrom: configMapRef` 로 통째 주입할 때
+# 매핑 변환 없이 바로 env 가 됩니다. 변경 시 `practice/rag_app/.env.example` + Day 6 의 30 매니페스트도 함께 검토.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-api-config                              # Deployment 30 의 envFrom.configMapRef.name 과 일치
+  namespace: rag-llm
+  labels:
+    app: rag-api
+    component: rag-api
+data:
+  # ── Qdrant 관련 (Day 1 + Day 2 결정) ──
+  # 클러스터 내부 Headless Service DNS — Day 5 의 localhost:6333 (port-forward) → 클러스터 DNS 로 치환됨.
+  QDRANT_URL: "http://qdrant.rag-llm.svc.cluster.local:6333"
+  # Day 2 인덱싱 파이프라인이 적재한 컬렉션명. 변경 시 Day 2 README + .env.example 도 동기화.
+  QDRANT_COLLECTION: "rag-docs"
+
+  # ── 임베딩 모델 (Day 2 결정) ──
+  # 한국어 자료 대응 — 384 dim, 본 코스 자료 retrieval recall 검증됨 (Day 2 §4.6.3 결정 박스).
+  # 모델 교체 시 Day 2 인덱싱 + 본 ConfigMap 두 곳을 *체크리스트로* 동기화 (자주 하는 실수 #13 e5 prefix).
+  EMBED_MODEL: "intfloat/multilingual-e5-small"
+
+  # ── vLLM 관련 (Day 4 결정) ──
+  # OpenAI 호환 API endpoint — Day 4 vLLM Service(22) 의 클러스터 DNS.
+  LLM_BASE_URL: "http://vllm.rag-llm.svc.cluster.local:8000/v1"
+  # vLLM Deployment(20) 의 `--served-model-name` 과 *완전 동일 문자열* 필수 (자주 하는 실수 #11/#14).
+  # Day 9 모델 교체 시 두 곳 + RAG API ConfigMap 까지 3 곳을 동시 변경.
+  LLM_MODEL: "microsoft/phi-2"
+
+  # ── 검색 파라미터 (Day 5 결정) ──
+  # /chat 요청 본문의 top_k 가 None 일 때 사용되는 기본값. Day 9 부하 테스트에서 1/3/5 비교 가능.
+  TOP_K: "3"

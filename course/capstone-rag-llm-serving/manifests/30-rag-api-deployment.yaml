@@ -3,19 +3,24 @@
 #                 (3 종 probe / labels / containers / resources 패턴)
 #   ② 라벨/네이밍 → course/capstone-rag-llm-serving/manifests/20-vllm-deployment.yaml
 #                 (캡스톤 컨벤션 — namespace=rag-llm, app=<component>, component=<role>)
-#   ③ env 매핑   → course/capstone-rag-llm-serving/practice/rag_app/.env.example (6 환경변수)
+#   ③ env 매핑   → course/capstone-rag-llm-serving/manifests/32-rag-api-configmap.yaml +
+#                 course/capstone-rag-llm-serving/manifests/33-rag-api-secret.yaml (Day 7 분리)
 #
-# 캡스톤 Day 6 — Day 5 에서 모듈화한 RAG API 코드(`practice/rag_app/`) 를 클러스터에 배포합니다.
+# 캡스톤 Day 6 (작성) → Day 7 (env 6 → envFrom 리팩토링).
 # Phase 4-3 vLLM Deployment 와 *형제 패턴* 이지만 다음 4 가지가 다릅니다 (lesson.md §4.4 결정 박스):
 #   ① replicas 2 (vLLM 1 vs RAG API 2) — RAG API 는 stateless 라 수평 확장 가능
-#   ② env 6 종을 Deployment 에 직접 박기 — Day 7 에서 ConfigMap(32) + Secret(33) 으로 *분리 리팩토링*
+#   ② env 6 종을 ConfigMap(32) + Secret(33) 으로 분리 — `envFrom` 일괄 주입 (Day 7 리팩토링 완료)
 #      "Day 6 = 일단 동작 / Day 7 = 왜 분리해야 하는가" 학습 흐름 (캡스톤 plan §7 결정)
 #   ③ probe 단축 — vLLM startupProbe 60×10s(10 분) vs RAG API 30×10s(5 분).
 #      RAG API 는 첫 1 회 e5-small 임베딩 모델 130MB 다운로드만 기다리면 됨.
 #   ④ GPU/PVC 없음, nodeSelector 미지정 — GPU 노드 풀 taint(NoSchedule) 가 자동으로 일반 CPU 노드로 배치.
 #
+# Day 7 envFrom 리팩토링 (lesson.md §4.8 결정 박스):
+#   - `envFrom: configMapRef + secretRef.optional` 일괄 주입 (env 6 줄 → 1 블록)
+#   - ConfigMap 의 키명 = 환경변수명 일치라 매핑 변환 불필요
+#   - ⚠ ConfigMap/Secret 변경 후 Pod 자동 재시작 안 됨 → `kubectl rollout restart` 수동 (자주 하는 실수 #20)
+#
 # Day 7~9 에 추가될 컴포넌트 예고:
-#   - Day 7: env 6 종 → 32-rag-api-configmap.yaml (4 종) + 33-rag-api-secret.yaml (HF 토큰, 옵션) 분리
 #   - Day 7: 34-rag-api-servicemonitor.yaml — Service 31 의 named port `http` 를 그대로 참조
 #   - Day 8: 35-rag-api-hpa.yaml — RPS 기준 커스텀 메트릭 HPA (prometheus-adapter)
 
@@ -56,30 +61,16 @@ spec:
           ports:
             - name: http                     # Service 31 의 targetPort: http 와 일치. ServiceMonitor(Day 7) 도 동일 이름 참조.
               containerPort: 8001            # Dockerfile EXPOSE 8001 + uvicorn --port 8001 와 일치.
-          # ── env 6 종 (Day 7 ConfigMap/Secret 분리 예정) ──
-          # 본 6 개는 practice/rag_app/.env.example 의 로컬 개발 값을 *클러스터 내부 DNS* 로 치환한 형태입니다.
-          # localhost:6333 → qdrant.rag-llm.svc:6333 (Day 1 Qdrant Headless Service)
-          # localhost:8000 → vllm.rag-llm.svc:8000 (Day 4 vLLM Service)
-          env:
-            - name: QDRANT_URL                                       # → Day 7 ConfigMap 32 로 이동 예정
-              value: http://qdrant.rag-llm.svc.cluster.local:6333
-            - name: QDRANT_COLLECTION                                # → Day 7 ConfigMap 32
-              value: rag-docs                                        # Day 2 인덱싱이 적재한 컬렉션명 (.env.example 와 일치)
-            - name: EMBED_MODEL                                      # → Day 7 ConfigMap 32
-              value: intfloat/multilingual-e5-small                  # Day 2 결정 — 384 dim, 한국어 자료 대응
-            - name: LLM_BASE_URL                                     # → Day 7 ConfigMap 32
-              value: http://vllm.rag-llm.svc.cluster.local:8000/v1
-            - name: LLM_MODEL                                        # → Day 7 ConfigMap 32
-              value: microsoft/phi-2                                 # Day 4 vLLM 의 --served-model-name 과 *완전 일치* 필수 (자주 하는 실수 ⑭)
-            - name: TOP_K                                            # → Day 7 ConfigMap 32
-              value: "3"                                             # 요청 본문 top_k 가 None 일 때 사용
-            # HF 토큰 (e5-small public 이라 옵션 — Day 7 Secret 33 로 이동 예정)
-            - name: HF_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: hf-secret
-                  key: HF_TOKEN
-                  optional: true                                     # Secret 부재해도 Pod 기동 정상 (Day 4 패턴 재사용)
+          # ── envFrom 일괄 주입 (Day 7 리팩토링) ──
+          # Day 6 의 env 6 종 + HF_TOKEN secretKeyRef 7 줄을 ConfigMap 32 + Secret 33 의 *통째 참조* 2 줄로 단축.
+          # 키명이 환경변수명과 동일하므로 매핑 변환 불필요. Phase 2-01 §1-2 envFrom 패턴.
+          # ⚠ 변경 후 Pod 가 자동 재시작되지 않습니다 — `kubectl rollout restart deployment/rag-api -n rag-llm` 으로 수동 재기동.
+          envFrom:
+            - configMapRef:
+                name: rag-api-config                                 # 32-rag-api-configmap.yaml — 6 키 (QDRANT_URL/COLLECTION/EMBED_MODEL/LLM_BASE_URL/LLM_MODEL/TOP_K)
+            - secretRef:
+                name: rag-api-secrets                                # 33-rag-api-secret.yaml — HF_TOKEN (e5-small public 이라 옵션)
+                optional: true                                       # Secret 부재해도 Pod 기동 정상 (Day 4 vllm-hf-secret 패턴 재사용)
           resources:
             requests:
               cpu: "200m"                    # 임베딩 inference 가 CPU bound — 200m 으로 충분. 부하 시 HPA(Day 8) 가 늘림.

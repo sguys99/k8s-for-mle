@@ -59,13 +59,13 @@
 - [x] `21-vllm-pvc.yaml` ← (Day 4: namespace + 라벨 + 이름 `vllm-model-cache`)
 - [x] `22-vllm-service.yaml` ← (Day 4: namespace + 라벨 + 이름 `vllm` + selector `app=vllm`)
 - [x] `23-vllm-hf-secret.yaml` ← (Day 4: namespace + 라벨 + 주석 보강 — phi-2 public 이라 옵션 처리)
-- [ ] `24-vllm-servicemonitor.yaml` ←
+- [x] `24-vllm-servicemonitor.yaml` ← Day 7 (Phase 4-3 이식 5 변경점 — name `vllm-phi2`→`vllm`, namespace 추가, selector `app=vllm`, release 라벨 `prom`, 캡스톤 컨벤션 라벨)
 - [ ] `25-vllm-hpa.yaml` ★ (prometheus-adapter + `vllm:num_requests_running`)
-- [x] `30-rag-api-deployment.yaml` ★ Day 6 (replicas=2, env 6 종 직접 박기, /healthz/liveness + /ready/readiness/startup, hf-cache emptyDir 1Gi, RollingUpdate maxSurge=1 maxUnavailable=0)
+- [x] `30-rag-api-deployment.yaml` ★ Day 6 (replicas=2, env 6 종 직접 박기, /healthz/liveness + /ready/readiness/startup, hf-cache emptyDir 1Gi, RollingUpdate maxSurge=1 maxUnavailable=0) → **Day 7 envFrom 리팩토링** (env 7 줄 → configMapRef + secretRef.optional 2 줄)
 - [x] `31-rag-api-service.yaml` ★ Day 6 (ClusterIP 8001, named port `http`, appProtocol http — Day 7 ServiceMonitor + Day 6 Ingress 공통 endpoint)
-- [ ] `32-rag-api-configmap.yaml` ★ (top_k, 프롬프트 템플릿) — Day 7 예정 (Day 6 의 env 6 종을 분리 리팩토링)
-- [ ] `33-rag-api-secret.yaml` ★ (HF 토큰 재사용) — Day 7 예정
-- [ ] `34-rag-api-servicemonitor.yaml` ★
+- [x] `32-rag-api-configmap.yaml` ★ Day 7 (data 6 키 — QDRANT_URL/COLLECTION/EMBED_MODEL/LLM_BASE_URL/LLM_MODEL/TOP_K, Day 6 env 6 종 *그대로 이전*)
+- [x] `33-rag-api-secret.yaml` ★ Day 7 (Opaque, stringData HF_TOKEN placeholder, 23-vllm-hf-secret 와 *별도 Secret*, optional: true 부재 허용)
+- [x] `34-rag-api-servicemonitor.yaml` ★ Day 7 (selector `app=rag-api`, endpoints `port: http` interval 30s, release 라벨 `prom` 으로 Prometheus CR 매칭)
 - [ ] `35-rag-api-hpa.yaml` ★ (RPS 기준)
 - [x] `40-ingress.yaml` ★ Day 6 (GCE Ingress, `<EXTERNAL_IP>.nip.io` host placeholder, /chat + /healthz Prefix, named port 참조, BackendConfig 미적용 — Day 8 예정)
 - [x] `50-indexing-workflow.yaml` ← Phase 4-4 (Day 3: namespace 변경 + git-clone step 1개 신규 추가로 5-step DAG + 이미지 레지스트리 placeholder + env 6종 주입 + volumeClaimTemplate 통합 마운트)
@@ -120,7 +120,7 @@
 - [x] `labs/day-04-vllm-deploy.md` ★ _(Day 4: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 5 분기/트러블슈팅 11항목)_
 - [x] `labs/day-05-rag-api-impl.md` ★ _(Day 5: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 2 분기/트러블슈팅 9항목)_
 - [x] `labs/day-06-rag-api-deploy.md` ★ _(Day 6: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 2 분기/트러블슈팅 9항목 — Docker Hub 빌드/푸시 + Deployment/Service + GCE Ingress + nip.io 검증)_
-- [ ] `labs/day-07-config-secret-monitoring.md` ★
+- [x] `labs/day-07-config-secret-monitoring.md` ★ _(Day 7: Goal 4/사전조건 5/Step 8/검증 체크리스트 8/정리 2 분기/트러블슈팅 8항목 + Qdrant ServiceMonitor 부록 — ConfigMap/Secret 분리 + envFrom + kube-prometheus-stack + ServiceMonitor 2 종 + PromQL)_
 - [ ] `labs/day-08-grafana-hpa.md` ★
 - [ ] `labs/day-09-load-test-tuning.md` ★
 - [ ] `labs/day-10-integration-cleanup.md` ★
@@ -134,7 +134,7 @@
 | `manifests/10-qdrant-statefulset.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/02-qdrant.yaml` | **Deployment+emptyDir → StatefulSet+volumeClaimTemplates 변환**, namespace `ml-pipelines` → `rag-llm`, PVC 5Gi, Headless Service 분리 | [x] |
 | `manifests/20-vllm-deployment.yaml` | `course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml` | (Day 4) 6 가지 변경: namespace `rag-llm`, 라벨 캡스톤 컨벤션(`app=vllm`/`component=llm-serving`), 이름 `vllm-phi2` → `vllm`, PVC 이름 `vllm-phi2-cache` → `vllm-model-cache`, **args 에 `--served-model-name=microsoft/phi-2` 추가**, 모니터링/HPA 라벨 제거 | [x] |
 | `manifests/21-vllm-pvc.yaml`, `22-vllm-service.yaml`, `23-vllm-hf-secret.yaml` | Phase 4-3 동명 파일 | (Day 4) namespace + 라벨 + 이름(vllm-phi2 → vllm 일관) 변경 | [x] |
-| `manifests/24-vllm-servicemonitor.yaml` | Phase 4-3 동명 파일 | (Day 7 예정) namespace + 라벨 + selector `app=vllm` 일관 | [ ] |
+| `manifests/24-vllm-servicemonitor.yaml` | Phase 4-3 동명 파일 | (Day 7) 5 변경점 — name `vllm-phi2`→`vllm`, namespace 추가, selector `app=vllm` 일관, release 라벨 `kube-prometheus-stack`→`prom` (Phase 3-02 패턴), 캡스톤 컨벤션 라벨({app, component}) | [x] |
 | `manifests/49-argo-rbac.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/01-argo-rbac.yaml` | (Day 3) namespace `ml-pipelines` → `rag-llm` 변경, ServiceAccount 이름 `workflow` 유지, Role 권한(`pods`/`pods/log`/`workflowtaskresults`) 동일 | [x] |
 | `manifests/50-indexing-workflow.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/20-rag-indexing-workflow.yaml` | (Day 3) 5가지 변경: namespace, **git-clone step 1개 신규 추가**(5-step DAG), 이미지 `rag-pipeline:0.1.0` → `docker.io/<user>/rag-indexer:0.1.0`, env 6종 주입(DOCS_ROOT/ROADMAP_PATH/QDRANT_URL/PIPELINE_DATA_DIR/EMBED_MODEL/QDRANT_COLLECTION), volumeClaimTemplate 1개로 `/docs`+`/data` 통합 마운트 | [x] |
 | `manifests/51-indexing-cronworkflow.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/30-rag-indexing-cron.yaml` | (Day 3) namespace 변경, workflowSpec 본문을 50과 동기화, embedding-model 기본값 `intfloat/multilingual-e5-small` (Day 2 결정 인용), schedule `0 3 * * *` Asia/Seoul + concurrencyPolicy: Replace 유지 | [x] |
@@ -162,18 +162,20 @@
   - [x] §3.1 챗봇 호출 흐름 (`/chat` → 응답) — Day 5 작성 (7 단계 ASCII 시퀀스 + 단계별 책임/latency 표 + 동기 호출 채택 근거) + **Day 6 보강** (Day 5 port-forward ↔ Day 6 Ingress 호출 경로 비교 ASCII + 3 가지 운영적 차이 표)
   - [x] §3.2 인덱싱 데이터 흐름 (오프라인) — Day 2 작성 (4단계 ASCII 시퀀스 + 메타데이터 4종 보존 + 챗봇 경로와 분리 이유)
   - [x] §3.3 인덱싱 Workflow DAG (Day 3 — 클러스터 위 자동화) — 5-step DAG ASCII + Day 2↔Day 3 매핑 표 + git-clone 첫 step 결정 근거 + port-forward 차이
-- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1·§4.2 / Day 2: §4.6 / Day 3: §4.7 / Day 4: §4.3 vLLM / Day 5: §4.4 자리표시 / **Day 6: §4.4 RAG API + §4.5 Ingress 본문 작성**)_
+- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1·§4.2 / Day 2: §4.6 / Day 3: §4.7 / Day 4: §4.3 vLLM / Day 5: §4.4 자리표시 / Day 6: §4.4 RAG API + §4.5 Ingress 본문 작성 / **Day 7: §4.8 ConfigMap/Secret + §4.9 ServiceMonitor 신규**)_
   - [x] §4.3 vLLM Deployment (Day 4: 매니페스트 4 종 표 + args 6 종 발췌 + GPU 격리 3 종 발췌 + startupProbe 발췌 + volumes 발췌 + 결정 박스 4개(이름 통일, served-model-name, GPU 노드 풀 분리, HF Secret 옵션) + Day 4 추가 컴포넌트 표)
   - [x] §4.4 RAG API Deployment (Day 6: 매니페스트 4 종 표(30/31 + Day 7 예고 32/33) + 4 발췌(env 6 종 / 3 종 Probe / resources / RollingUpdate strategy) + 결정 박스 4개(replicas=2 비대칭, env 직접 박기, livenessProbe vs readinessProbe path 분리, emptyDir vs PVC) + Day 6 추가 컴포넌트 표)
   - [x] §4.5 Ingress (Day 6: 매니페스트 1 종 표 + 2 발췌(annotations+ingress class / rules) + 결정 박스 3개(GCE vs nginx, nip.io host, timeout 조정 Day 8 BackendConfig 로 미룸) + Day 6 추가 컴포넌트 표)
   - [x] §4.6 인덱싱 파이프라인 (Day 2: subcommand 표 + 4 코드 발췌 + idempotent 결정 박스)
   - [x] §4.7 Argo Workflow / CronWorkflow (Day 3: 매니페스트 3개 표 + 핵심 구조 발췌 + 결정 박스 4개(Workflow vs Job, volumeClaimTemplate 통합 마운트, namespace 분리+RBAC, CronWorkflow concurrencyPolicy+WorkflowTemplate 미도입) + Day 3 추가 컴포넌트 표)
+  - [x] §4.8 ConfigMap / Secret 분리 (Day 7: 매니페스트 2 종 + Deployment 30 변경 표 + envFrom 일괄 발췌 + 결정 박스 4개(ConfigMap 1개 통합, Secret 별도 33 vs 23 재사용, envFrom vs env.valueFrom, ConfigMap 변경 시 재시작 4 옵션) + Day 7 추가 컴포넌트 표 (1))
+  - [x] §4.9 ServiceMonitor (Day 7: 매니페스트 2 종 표 + RAG API ServiceMonitor 발췌 + 라벨 매칭 2 단계 ASCII + 결정 박스 3개(kube-prometheus-stack vs 직접 작성 vs GMP, release 라벨 `prom`, Qdrant ServiceMonitor 4 옵션) + Day 7 추가 컴포넌트 표 (2))
 - [x] §5 RAG API 구현 노트 (Day 5: 6 소절 — §5.1 모듈 분리 원칙 표 + §5.2 retriever (e5 prefix + 모델 캐싱) + §5.3 llm_client (timeout/api_key/temperature) + §5.4 prompts (한국어 SYSTEM_PROMPT + 인용 마커) + §5.5 main (lifespan + 4 메트릭 + 결정 박스 임베딩 캐싱 3 옵션) + §5.6 tests/test_retriever 6 케이스 표)
-- [ ] §6 모니터링 핵심 메트릭 (RAG / vLLM / Qdrant / GPU 4축, 60줄)
+- [x] §6 모니터링 핵심 메트릭 (Day 7: 4 축 소절 — §6.1 RAG API 메트릭 4 종 표 + §6.2 vLLM 메트릭 6 종 표 + §6.3 Qdrant 메트릭 부재 명시 + Day 10 도입 예고 + §6.4 GPU(DCGM) 메트릭 + 4 축 본 캡스톤 깊이 요약)
 - [ ] §7 HPA 커스텀 메트릭 (왜 CPU 기준이 부적절한가, prometheus-adapter 흐름, 60줄)
 - [ ] §8 Helm으로 한 줄 배포 (values 분리(dev/prod), `helm install --create-namespace`, 50줄)
 - [ ] §9 검증 시나리오 (6단계, §9와 동일)
-- [~] §10 🚨 자주 하는 실수 _(Day 1: 3건 + Day 2: 3건 + Day 3: 3건 + Day 4: 3건 + Day 5: 3건 + **Day 6: Ingress/배포 3건**(named port mismatch → 502 / Docker Hub rate limit → ImagePullBackOff / GKE LoadBalancer 비용 누수) = 18건. 추후 Day 7 ServiceMonitor·Day 8 HPA·Day 9 부하 OOM 항목 추가 예정)_
+- [~] §10 🚨 자주 하는 실수 _(Day 1: 3건 + Day 2: 3건 + Day 3: 3건 + Day 4: 3건 + Day 5: 3건 + Day 6: Ingress/배포 3건 + **Day 7: ConfigMap/Secret/ServiceMonitor 3건**(#19 ServiceMonitor `release` 라벨 누락 → Targets 빈 상태 / #20 ConfigMap 변경 후 Pod 재시작 누락 → 옛값 / #21 Secret `data` vs `stringData` 혼동 → 깨진 토큰) = 21건. 추후 Day 8 HPA·Day 9 부하 OOM 항목 추가 예정)_
 - [ ] §11 확장 아이디어 (reranker, 스트리밍, 멀티턴, RAGAS 평가, 30줄)
 - [ ] §12 다음 단계 링크 (Phase 5 또는 본인 업무 적용)
 
@@ -230,10 +232,13 @@
 - [ ] 검증: 학습자 단계 — Docker Hub 이미지 빌드/푸시 → Deployment READY=2/2 → Service /healthz 200 → Ingress ADDRESS 부여(3~5 분) → nip.io nslookup 해석 → `curl http://<IP>.nip.io/chat` 200 OK + sources 3 개(메타 4 종 + score + chunk_id) + 답변에 `[1]` `[2]` `[3]` 인용 마커
 
 ### Day 7 — ConfigMap/Secret 분리 + ServiceMonitor
-- [ ] `manifests/32-rag-api-configmap.yaml`, `33-rag-api-secret.yaml`
-- [ ] `manifests/24-vllm-servicemonitor.yaml`(이식), `34-rag-api-servicemonitor.yaml`
-- [ ] `labs/day-07-config-secret-monitoring.md`
-- [ ] 검증: Prometheus UI에 vllm/rag-api/qdrant 타겟 UP
+- [x] `manifests/32-rag-api-configmap.yaml` (data 6 키 — Day 6 env 6 종 그대로 이전), `33-rag-api-secret.yaml` (Opaque + stringData HF_TOKEN placeholder, 23 와 별도 Secret + optional: true)
+- [x] `manifests/24-vllm-servicemonitor.yaml` (Phase 4-3 이식 5 변경점 — name `vllm-phi2`→`vllm`, namespace 추가, selector `app=vllm`, release 라벨 `prom`, 캡스톤 컨벤션 라벨), `34-rag-api-servicemonitor.yaml` (selector `app=rag-api`, endpoints `port: http` interval 30s, release 라벨 `prom`)
+- [x] `manifests/30-rag-api-deployment.yaml` envFrom 리팩토링 (env 7 줄 → configMapRef + secretRef.optional 2 줄)
+- [x] `labs/day-07-config-secret-monitoring.md` (Goal 4/사전조건 5/Step 8/검증 8/정리 2 분기/트러블슈팅 8 + Qdrant ServiceMonitor 부록)
+- [x] lesson.md §4.8 ConfigMap/Secret 신규 + §4.9 ServiceMonitor 신규 + §6 모니터링 4 축 본문 + §10 자주 하는 실수 #19/#20/#21 추가, architecture.md §3.12 모니터링 결정 노트 신규 (4 소절 — release 라벨 매칭 / ConfigMap 재시작 4 옵션 / Qdrant 처리 4 옵션 / RBAC 분리 운영 가치) + §5 메트릭 표 실측값 갱신 + §7 Day 7 행 + 부록 A Day 7 항목
+- [x] `labs/README.md` Day 7 행 ✅ + 작성 완료된 lab 리스트에 day-07 추가
+- [ ] 검증: 학습자 단계 — ConfigMap/Secret apply → Deployment 30 envFrom 리팩토링 + `kubectl rollout restart` → kube-prometheus-stack `prom` release 설치(`monitoring` namespace) → ServiceMonitor 24/34 apply → Prometheus Targets 페이지 vllm + rag-api UP + PromQL `rate(rag_chat_total[1m])` / `vllm:num_requests_running` 그래프 확인 + Day 6 의 `/chat` 1 줄 완료 기준 회귀 없음
 
 ### Day 8 — Grafana 대시보드 + HPA
 - [ ] `manifests/25-vllm-hpa.yaml`, `35-rag-api-hpa.yaml`
@@ -270,16 +275,16 @@
 - [x] Day 4 — vLLM Deployment + OpenAI 호환 API 호출 검증 (2026-05-07)
 - [x] Day 5 — RAG API 구현 (retriever + LLM 결합) (2026-05-08)
 - [x] Day 6 — RAG API Deployment + Service + Ingress (2026-05-09)
-- [ ] Day 7 — ConfigMap/Secret 분리, ServiceMonitor 추가
+- [x] Day 7 — ConfigMap/Secret 분리, ServiceMonitor 추가 (2026-05-09)
 - [ ] Day 8 — Grafana 대시보드 + HPA(커스텀 메트릭) 설정
 - [ ] Day 9 — 부하 테스트(hey) + 튜닝
 - [ ] Day 10 — 통합 검증 + 문서화 + 클러스터 삭제
 
 산출물 4종 관점 체크 (캡스톤은 단일 토픽이지만 4종을 만족해야 함):
 
-- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건, 총 9건) / Day 4: §1.1·§2.1·§4.3·§10 (3건, 총 12건) / Day 5: §2.3·§3.1·§4.4 자리표시·§5·§10 (3건, 총 15건) / **Day 6: §3.1 보강(Day 5↔Day 6 호출 경로 비교)·§4.4 RAG API Deployment 본문·§4.5 Ingress 본문·§10 (3건 추가, 총 18건))**)_
-- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건(49·50·51) + indexing README 갱신 / Day 4: manifests 4건(20·21·22·23) / Day 5: practice/rag_app/ 9건 / **Day 6: manifests 3건 추가(30·31·40))**_
-- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4·5·6 작성 완료, README 갱신 완료, day-07~day-10 미작성)_
+- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건, 총 9건) / Day 4: §1.1·§2.1·§4.3·§10 (3건, 총 12건) / Day 5: §2.3·§3.1·§4.4 자리표시·§5·§10 (3건, 총 15건) / Day 6: §3.1 보강·§4.4·§4.5·§10 (3건, 총 18건) / **Day 7: §4.8 ConfigMap/Secret 신규·§4.9 ServiceMonitor 신규·§6 모니터링 4 축 본문·§10 (3건 추가, 총 21건))**)_
+- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건(49·50·51) + indexing README 갱신 / Day 4: manifests 4건(20·21·22·23) / Day 5: practice/rag_app/ 9건 / Day 6: manifests 3건 추가(30·31·40) / **Day 7: manifests 4건 추가(32·33·24·34) + Deployment 30 envFrom 리팩토링)**_
+- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4·5·6·7 작성 완료, README 갱신 완료, day-08~day-10 미작성)_
 - [ ] **GPU 클러스터 검증** — Day 10 통합 검증 + GKE 클러스터 삭제 로그
 
 ---
@@ -426,3 +431,9 @@ gcloud container clusters delete capstone --zone us-central1-a --quiet
 - **2026-05-09 (Day 6)** — **§4.4 결정 박스 4 + §4.5 결정 박스 3 = Day 4 §4.3 동등 깊이 (사용자 승인)**: §4.4 ① replicas=2 비대칭(stateless) ② env Deployment 직접 박기(Day 7 분리 예고) ③ liveness `/healthz` vs readiness `/ready` path 분리(Day 5 코드 결정의 매니페스트 표면) ④ emptyDir vs PVC RWO/RWX (130MB 모델 캐시 단순화). §4.5 ① GCE vs nginx-ingress vs LoadBalancer Service 3 옵션 ② nip.io 채택 ③ timeout 조정 Day 8 BackendConfig 로 미룸. 두 절 합쳐 약 230 줄로 Day 4 §4.3 (140 줄) 보다 길지만 Ingress 의 외부 의존성(GCE / nip.io / Docker Hub) 이 많아 자연스러움.
 - **2026-05-09 (Day 6)** — **livenessProbe vs readinessProbe path 분리 의의를 §4.4.5 결정 박스 ③ 에 결정 노트 표 형식으로**: Day 5 의 `main.py` 가 의도한 `/healthz` (프로세스 응답) vs `/ready` (lifespan 완료) 분리는 K8s 측 `livenessProbe` (재시작 트리거) vs `readinessProbe` (Service endpoint 제거) 의 *목적 차이* 와 정확히 매핑. 두 path 를 같게 두면 lifespan 진행 중 livenessProbe 가 503 받아 *무한 재시작 루프* — 이를 lesson.md §4.4 결정 박스 ③ 에 표 형식으로 정리. Day 5 의 분리 결정이 Day 6 매니페스트의 *기반 명세* 로 작용함을 학습자가 인지하도록 하는 의도.
 - **2026-05-09 (Day 6)** — **자주 하는 실수 3 건 추가 (Day 6 — Ingress/배포)**: ⑯ Service named port `http` 미선언 → Ingress 502 Bad Gateway. 진단 명령(`kubectl get svc -o jsonpath='{.spec.ports[*].name}'`) + named port vs number 트레이드오프. ⑰ Docker Hub anonymous pull 6h/100 회 rate limit → ImagePullBackOff 429. 해결 단계(`imagePullPolicy: IfNotPresent` + tag 핀 → docker login + imagePullSecret → GAR 마이그레이션) 3 단 안내. ⑱ GKE LoadBalancer 비용 누수 — Ingress 시간당 \$0.025, 5 일 \$3, 한 달 \$20+. lab 정리 분기에 `kubectl delete ingress` 강조 + GCP Console External IP addresses 모니터링 안내. 총 자주 하는 실수 15 → 18 건.
+- **2026-05-09 (Day 7)** — **Secret 별도 생성 (사용자 승인)**: 3 옵션(별도 Secret 33 / 23-vllm-hf-secret 재사용 / 통합 Secret) 중 별도 33 신규. 결정 근거 — ① 컴포넌트별 RBAC 분리 가능(vLLM/RAG API 권한 격리) ② Helm Day 10 차트 templates 분리 깔끔(`vllm.yaml` ↔ `rag-api.yaml` 가 각자 Secret 참조) ③ "vLLM 전용(`hf-secret`)" 이름을 RAG API 가 참조하면 *의미 오용*. 단점(HF_TOKEN 값 2 곳 중복) 은 학습 단계 placeholder 라 무영향. 운영 배포 시 SealedSecrets/External Secrets Operator 가 *원본은 한 곳* 에 두고 *parametrize*. lesson.md §4.8 결정 박스 ② + architecture.md §3.12.4 RBAC 분리 운영 가치.
+- **2026-05-09 (Day 7)** — **Pod 재시작 트리거: Day 7 수동 + Day 10 자동 (사용자 승인)**: 4 옵션(수동 `kubectl rollout restart` / Helm `checksum/config` annotation / Reloader 컨트롤러 / volumeMount + 코드 watcher) 중 *(A) → (B) 점진적 추상화*. Day 7 = 학습자가 *왜 자동이 아닌가* 직접 체험 (자주 하는 실수 #20 명시화) → Day 10 Helm 차트가 ConfigMap sha256 을 podTemplate annotation 으로 박아 자동화. Reloader 는 외부 의존성 추가라 캡스톤 미적용 — Phase 5 *컨트롤러 패턴 학습* 에서 다시 등장. architecture.md §3.12.2 4 옵션 비교 표.
+- **2026-05-09 (Day 7)** — **Qdrant ServiceMonitor: Day 7 부록 + Day 10 Helm 통합 (사용자 승인)**: 4 옵션(부록+Day 10 / 정식 포함 / Day 8 Grafana 와 함께 / 영구 미적용) 중 부록. 결정 근거 — Qdrant 가 6333 포트 `/metrics` 를 *기본 노출* 하지만 캡스톤 매니페스트 11-qdrant-service.yaml 에 named port 미선언이라 ServiceMonitor 35 작성 시 11 매니페스트 수정이 *선결*. Day 7 핵심 학습 가치(envFrom + Prometheus Operator 라벨 매칭 패턴) 흐름이 분산되어 본 Day 에서 제외. Day 10 Helm `templates/monitoring.yaml` 에서 vllm/rag-api/qdrant 3 종 통합으로 정식 도입. lab 부록 1 단락만 (35 매니페스트 5~10 줄 예시 + 11 Service 선결 안내). architecture.md §3.12.3 4 옵션 비교 표.
+- **2026-05-09 (Day 7)** — **§6 모니터링 4 축 소절 + 메트릭 표 (사용자 승인)**: 3 옵션(4 축 소절 + 메트릭 표 / 목적별 3 소절 / ServiceMonitor 구조 중심) 중 4 축. 결정 근거 — architecture.md §5 메트릭 표(4 축) 와 *1:1 대응* 으로 두 문서 역할 일관성 확보. §6.1 RAG API 4 종 / §6.2 vLLM 6 종 / §6.3 Qdrant 부재 명시 + Day 10 도입 예고 / §6.4 GPU(DCGM) 캡스톤 미적용 + GKE 자동 통합 위임. 본 캡스톤 lab 검증 범위 — RAG API 4 종 + vLLM 6 종 = 10 메트릭. Day 8 Grafana 4 패널 + HPA 2 개의 입력이 본 표.
+- **2026-05-09 (Day 7)** — **release 라벨 매칭 2 단계 ASCII 다이어그램 (lesson.md §4.9.2 + architecture.md §3.12.1)**: Phase 3-02 §1-2 의 자주 하는 실수 1 번이 캡스톤에서도 그대로 유효 — Prometheus CR `serviceMonitorSelector` ↔ ServiceMonitor `metadata.labels.release` ↔ ServiceMonitor `spec.selector` ↔ Service `metadata.labels` 4 단계 매칭을 ASCII 로 시각화. 학습자가 ServiceMonitor 작성 시 가장 자주 빠뜨리는 `release: prom` 한 줄을 자주 하는 실수 #19 로 표면화 + lesson.md §4.9 결정 박스 ② 에서 Helm release name 변경 시 라벨도 함께 변경해야 함을 명시.
+- **2026-05-09 (Day 7)** — **자주 하는 실수 3 건 추가 (Day 7 — ConfigMap/Secret/ServiceMonitor)**: ⑲ ServiceMonitor `release` 라벨 누락 → Targets 빈 상태. 진단 단계 — Prometheus CR serviceMonitorSelector 확인 → ServiceMonitor labels 비교 → 누락 시 매니페스트 수정. ⑳ ConfigMap 변경 후 Pod 재시작 누락 → envFrom 옛값 고정. 해결 단계 — 즉시 `kubectl rollout restart` / 자동화 Day 10 Helm `checksum/config` / 외부 의존성 Reloader 컨트롤러. ㉑ Secret `data` vs `stringData` 혼동 → base64 디코딩 실패. 해결 단계 — 평문은 `stringData` / base64 는 `data` / CLI `kubectl create secret --from-literal` / 검증 `base64 -d`. 총 자주 하는 실수 18 → 21 건. Phase 2-01 §1-1 + Phase 3-02 §1-2 인용으로 학습 누적성.

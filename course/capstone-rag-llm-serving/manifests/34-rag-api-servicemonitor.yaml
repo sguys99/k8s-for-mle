@@ -1,0 +1,47 @@
+# 출처:
+#   ① 패턴       → course/capstone-rag-llm-serving/manifests/24-vllm-servicemonitor.yaml
+#                  (캡스톤 형제 ServiceMonitor — release: prom + namespace: rag-llm 동일 패턴)
+#   ② 메트릭 출처 → course/capstone-rag-llm-serving/practice/rag_app/main.py (lifespan 내부 메트릭 4 종 등록)
+#   ③ 결정 근거   → docs/capstone-plan.md §7 Day 7 + lesson.md §4.9 결정 박스
+#
+# 캡스톤 Day 7 — RAG API 의 prometheus_client 메트릭 4 종을 Prometheus 가 자동 수집하도록 연결합니다.
+# Day 5 에서 main.py 에 등록한 4 메트릭 (Counter 1 + Histogram 3) 을 별도 코드 변경 없이 그대로 사용.
+#
+# Service 31 의 named port `http` 를 그대로 참조 — Day 6 Ingress 와 *동일 endpoint* 를 다른 path 로 긁습니다:
+#   - Ingress 40    : / → /chat, /healthz (외부 client)
+#   - ServiceMonitor: /metrics                  (Prometheus, 30s 간격)
+#
+# RAG API 가 노출하는 메트릭 4 종 (lesson.md §6.1 참고):
+#   - rag_chat_total{status}                  : Counter, /chat 요청 수 (status=ok/not_ready/bad_request/error)
+#   - rag_chat_latency_seconds                : Histogram, 전체 /chat 응답 latency (sources 직렬화까지)
+#   - rag_retrieve_latency_seconds            : Histogram, retriever (Qdrant 검색 + e5 인코딩) latency
+#   - rag_llm_latency_seconds                 : Histogram, vLLM 호출 latency (OpenAI SDK timeout=120)
+#
+# Day 8 활용 (HPA 커스텀 메트릭):
+#   prometheus-adapter 가 본 ServiceMonitor 가 수집한 `rate(rag_chat_total[1m])` 를 `pods/rag-chat-rps` 로 노출
+#   → HPA(Day 8) 가 RPS 기준으로 RAG API replicas 를 늘림.
+#
+# ⚠ ServiceMonitor selector 매칭은 *2 단계* (자주 하는 실수 #19):
+#   1) Prometheus CR 의 serviceMonitorSelector → 본 ServiceMonitor 의 metadata.labels (`release: prom`)
+#   2) 본 ServiceMonitor 의 spec.selector → Service 31 의 metadata.labels (`app: rag-api`)
+#   둘 중 하나만 어긋나도 Targets 페이지에 안 잡힘.
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rag-api
+  namespace: rag-llm
+  labels:
+    app: rag-api
+    component: rag-api
+    # Phase 3-02 + 캡스톤 24-vllm-servicemonitor.yaml 와 동일 — `release: prom` 매칭 필수.
+    release: prom
+spec:
+  selector:
+    matchLabels:
+      app: rag-api                    # 31-rag-api-service.yaml 의 라벨과 매칭. replicas=2 라 endpoints 2 개 수집.
+  endpoints:
+    - port: http                      # 31-rag-api-service.yaml 의 ports.name=http 와 일치 (number 8001 직접 사용 대신).
+      path: /metrics                  # main.py 의 prometheus_client `/metrics` 엔드포인트 (Day 5 lifespan 등록).
+      interval: 30s                   # 30 초 간격 — RAG API 는 RPS 변동이 1 분 단위라 vLLM(15s) 보다 길게.
+      scrapeTimeout: 10s              # /metrics 페이지 응답 timeout. e5 모델 로딩 직후라도 1 초 이내 응답.
