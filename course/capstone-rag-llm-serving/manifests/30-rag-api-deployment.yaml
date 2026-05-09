@@ -1,0 +1,121 @@
+# 출처:
+#   ① 구조      → course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml
+#                 (3 종 probe / labels / containers / resources 패턴)
+#   ② 라벨/네이밍 → course/capstone-rag-llm-serving/manifests/20-vllm-deployment.yaml
+#                 (캡스톤 컨벤션 — namespace=rag-llm, app=<component>, component=<role>)
+#   ③ env 매핑   → course/capstone-rag-llm-serving/practice/rag_app/.env.example (6 환경변수)
+#
+# 캡스톤 Day 6 — Day 5 에서 모듈화한 RAG API 코드(`practice/rag_app/`) 를 클러스터에 배포합니다.
+# Phase 4-3 vLLM Deployment 와 *형제 패턴* 이지만 다음 4 가지가 다릅니다 (lesson.md §4.4 결정 박스):
+#   ① replicas 2 (vLLM 1 vs RAG API 2) — RAG API 는 stateless 라 수평 확장 가능
+#   ② env 6 종을 Deployment 에 직접 박기 — Day 7 에서 ConfigMap(32) + Secret(33) 으로 *분리 리팩토링*
+#      "Day 6 = 일단 동작 / Day 7 = 왜 분리해야 하는가" 학습 흐름 (캡스톤 plan §7 결정)
+#   ③ probe 단축 — vLLM startupProbe 60×10s(10 분) vs RAG API 30×10s(5 분).
+#      RAG API 는 첫 1 회 e5-small 임베딩 모델 130MB 다운로드만 기다리면 됨.
+#   ④ GPU/PVC 없음, nodeSelector 미지정 — GPU 노드 풀 taint(NoSchedule) 가 자동으로 일반 CPU 노드로 배치.
+#
+# Day 7~9 에 추가될 컴포넌트 예고:
+#   - Day 7: env 6 종 → 32-rag-api-configmap.yaml (4 종) + 33-rag-api-secret.yaml (HF 토큰, 옵션) 분리
+#   - Day 7: 34-rag-api-servicemonitor.yaml — Service 31 의 named port `http` 를 그대로 참조
+#   - Day 8: 35-rag-api-hpa.yaml — RPS 기준 커스텀 메트릭 HPA (prometheus-adapter)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-api
+  namespace: rag-llm
+  labels:
+    app: rag-api
+    component: rag-api
+spec:
+  replicas: 2                                # RAG API 는 stateless — Pod 1 개 죽어도 다른 Pod 가 처리. vLLM(1) 과 비대칭.
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: rag-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1                            # replicas=2 에서 rolling update 시 일시적으로 3 Pod 가능 → 가용성 우선
+      maxUnavailable: 0                      # 다운타임 0 — Day 6 검증의 1 줄 완료 기준이 항상 통과되도록.
+  template:
+    metadata:
+      labels:
+        app: rag-api
+        component: rag-api
+    spec:
+      # GPU 노드 격리 *없음* — RAG API 는 CPU 만 사용.
+      # GKE T4 노드 풀의 taint(nvidia.com/gpu=present:NoSchedule) 를 통과시킬 toleration 이 없으므로
+      # 일반 CPU 노드 풀(default-pool 또는 e2-medium pool) 로 자동 배치됩니다.
+      containers:
+        - name: rag-api
+          # Day 6 lab Step 2 에서 본인 Docker Hub 계정으로 빌드/푸시 후 sed 로 placeholder 치환.
+          # tag 0.1.0 핀 — Docker Hub anonymous pull 6h/100 회 rate limit 회피 (자주 하는 실수 ⑰).
+          image: docker.io/<user>/rag-api:0.1.0
+          imagePullPolicy: IfNotPresent      # latest 가 아닌 0.1.0 핀이라 IfNotPresent 가 안전. Always 면 매 Pod 기동마다 manifest pull.
+          ports:
+            - name: http                     # Service 31 의 targetPort: http 와 일치. ServiceMonitor(Day 7) 도 동일 이름 참조.
+              containerPort: 8001            # Dockerfile EXPOSE 8001 + uvicorn --port 8001 와 일치.
+          # ── env 6 종 (Day 7 ConfigMap/Secret 분리 예정) ──
+          # 본 6 개는 practice/rag_app/.env.example 의 로컬 개발 값을 *클러스터 내부 DNS* 로 치환한 형태입니다.
+          # localhost:6333 → qdrant.rag-llm.svc:6333 (Day 1 Qdrant Headless Service)
+          # localhost:8000 → vllm.rag-llm.svc:8000 (Day 4 vLLM Service)
+          env:
+            - name: QDRANT_URL                                       # → Day 7 ConfigMap 32 로 이동 예정
+              value: http://qdrant.rag-llm.svc.cluster.local:6333
+            - name: QDRANT_COLLECTION                                # → Day 7 ConfigMap 32
+              value: rag-docs                                        # Day 2 인덱싱이 적재한 컬렉션명 (.env.example 와 일치)
+            - name: EMBED_MODEL                                      # → Day 7 ConfigMap 32
+              value: intfloat/multilingual-e5-small                  # Day 2 결정 — 384 dim, 한국어 자료 대응
+            - name: LLM_BASE_URL                                     # → Day 7 ConfigMap 32
+              value: http://vllm.rag-llm.svc.cluster.local:8000/v1
+            - name: LLM_MODEL                                        # → Day 7 ConfigMap 32
+              value: microsoft/phi-2                                 # Day 4 vLLM 의 --served-model-name 과 *완전 일치* 필수 (자주 하는 실수 ⑭)
+            - name: TOP_K                                            # → Day 7 ConfigMap 32
+              value: "3"                                             # 요청 본문 top_k 가 None 일 때 사용
+            # HF 토큰 (e5-small public 이라 옵션 — Day 7 Secret 33 로 이동 예정)
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: HF_TOKEN
+                  optional: true                                     # Secret 부재해도 Pod 기동 정상 (Day 4 패턴 재사용)
+          resources:
+            requests:
+              cpu: "200m"                    # 임베딩 inference 가 CPU bound — 200m 으로 충분. 부하 시 HPA(Day 8) 가 늘림.
+              memory: "1Gi"                  # e5-small ≈ 130MB + Python runtime ≈ 500MB.
+            limits:
+              cpu: "1"                       # CPU throttling 방지. Day 9 부하 테스트에서 1 코어가 단일 Pod 처리 한계.
+              memory: "2Gi"                  # OOMKilled 방지. requests=1Gi 의 2 배 여유.
+          # ── 3 종 Probe — vLLM 보다 훨씬 짧은 timeout (RAG API 는 5~10 초 ready) ──
+          # 첫 기동: 임베딩 모델 130MB 다운로드(첫 1 회) + lifespan 초기화(1~2 분) ≈ 최대 5 분.
+          # vLLM 의 5~10 분과 비교해 절반 이하 — 모델이 작아서.
+          startupProbe:
+            httpGet:
+              path: /ready                   # lifespan 초기화 완료(retriever + llm 준비) 후 200 응답
+              port: http
+            failureThreshold: 30             # 30 × 10s = 최대 5 분. e5-small 다운로드(HF Hub 5~30 초) + lifespan 1~2 분.
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready                   # main.py 의 /ready 핸들러 — app.state.ready 가 True 일 때 200
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz                 # main.py 의 /healthz 핸들러 — 프로세스 응답 가능 여부만
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            # 임베딩 모델 캐시 — emptyDir 라 Pod 재기동 시 다시 다운로드(130MB, 5~30 초).
+            # Day 9 부하 테스트 후 cold start 가 거슬리면 PVC 로 전환 (lesson.md §4.4 결정 박스 ④).
+            - name: hf-cache
+              mountPath: /home/app/.cache/huggingface             # Dockerfile 의 HF_HOME 과 일치
+      volumes:
+        - name: hf-cache
+          emptyDir:
+            sizeLimit: 1Gi                                        # e5-small 130MB + 안전 여유
+      terminationGracePeriodSeconds: 30                            # 진행 중 /chat 요청 마감 시간. vLLM(60) 보다 짧음 — RAG API 는 latency 1~5 초.

@@ -61,13 +61,13 @@
 - [x] `23-vllm-hf-secret.yaml` ← (Day 4: namespace + 라벨 + 주석 보강 — phi-2 public 이라 옵션 처리)
 - [ ] `24-vllm-servicemonitor.yaml` ←
 - [ ] `25-vllm-hpa.yaml` ★ (prometheus-adapter + `vllm:num_requests_running`)
-- [ ] `30-rag-api-deployment.yaml` ★
-- [ ] `31-rag-api-service.yaml` ★
-- [ ] `32-rag-api-configmap.yaml` ★ (top_k, 프롬프트 템플릿)
-- [ ] `33-rag-api-secret.yaml` ★ (HF 토큰 재사용)
+- [x] `30-rag-api-deployment.yaml` ★ Day 6 (replicas=2, env 6 종 직접 박기, /healthz/liveness + /ready/readiness/startup, hf-cache emptyDir 1Gi, RollingUpdate maxSurge=1 maxUnavailable=0)
+- [x] `31-rag-api-service.yaml` ★ Day 6 (ClusterIP 8001, named port `http`, appProtocol http — Day 7 ServiceMonitor + Day 6 Ingress 공통 endpoint)
+- [ ] `32-rag-api-configmap.yaml` ★ (top_k, 프롬프트 템플릿) — Day 7 예정 (Day 6 의 env 6 종을 분리 리팩토링)
+- [ ] `33-rag-api-secret.yaml` ★ (HF 토큰 재사용) — Day 7 예정
 - [ ] `34-rag-api-servicemonitor.yaml` ★
 - [ ] `35-rag-api-hpa.yaml` ★ (RPS 기준)
-- [ ] `40-ingress.yaml` ★ (`/chat` 라우팅)
+- [x] `40-ingress.yaml` ★ Day 6 (GCE Ingress, `<EXTERNAL_IP>.nip.io` host placeholder, /chat + /healthz Prefix, named port 참조, BackendConfig 미적용 — Day 8 예정)
 - [x] `50-indexing-workflow.yaml` ← Phase 4-4 (Day 3: namespace 변경 + git-clone step 1개 신규 추가로 5-step DAG + 이미지 레지스트리 placeholder + env 6종 주입 + volumeClaimTemplate 통합 마운트)
 - [x] `51-indexing-cronworkflow.yaml` ← Phase 4-4 (Day 3: workflowSpec 본문을 50과 동기화, embedding-model 기본값 `intfloat/multilingual-e5-small` 로 갱신)
 
@@ -119,7 +119,7 @@
 - [x] `labs/day-03-indexing-argo.md` ★ _(Day 3: Goal 5/사전조건 6/Step 8/검증 체크리스트 8/정리/트러블슈팅 7항목)_
 - [x] `labs/day-04-vllm-deploy.md` ★ _(Day 4: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 5 분기/트러블슈팅 11항목)_
 - [x] `labs/day-05-rag-api-impl.md` ★ _(Day 5: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 2 분기/트러블슈팅 9항목)_
-- [ ] `labs/day-06-rag-api-deploy.md` ★
+- [x] `labs/day-06-rag-api-deploy.md` ★ _(Day 6: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 2 분기/트러블슈팅 9항목 — Docker Hub 빌드/푸시 + Deployment/Service + GCE Ingress + nip.io 검증)_
 - [ ] `labs/day-07-config-secret-monitoring.md` ★
 - [ ] `labs/day-08-grafana-hpa.md` ★
 - [ ] `labs/day-09-load-test-tuning.md` ★
@@ -139,6 +139,9 @@
 | `manifests/50-indexing-workflow.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/20-rag-indexing-workflow.yaml` | (Day 3) 5가지 변경: namespace, **git-clone step 1개 신규 추가**(5-step DAG), 이미지 `rag-pipeline:0.1.0` → `docker.io/<user>/rag-indexer:0.1.0`, env 6종 주입(DOCS_ROOT/ROADMAP_PATH/QDRANT_URL/PIPELINE_DATA_DIR/EMBED_MODEL/QDRANT_COLLECTION), volumeClaimTemplate 1개로 `/docs`+`/data` 통합 마운트 | [x] |
 | `manifests/51-indexing-cronworkflow.yaml` | `course/phase-4-ml-on-k8s/04-argo-workflows/manifests/30-rag-indexing-cron.yaml` | (Day 3) namespace 변경, workflowSpec 본문을 50과 동기화, embedding-model 기본값 `intfloat/multilingual-e5-small` (Day 2 결정 인용), schedule `0 3 * * *` Asia/Seoul + concurrencyPolicy: Replace 유지 | [x] |
 | `practice/pipelines/indexing/pipeline.py` | Phase 4-4 `practice/rag_pipeline/pipeline.py` | (Day 2) 화이트리스트 재귀 글로브(`phase-*/**/lesson.md` + `capstone-*/lesson.md` + `study-roadmap.md`), 메타데이터 4종(source/phase/topic/heading) 보존, MD-header→Recursive 2단계 청킹, 모델 `intfloat/multilingual-e5-small` 로 교체 + e5 prefix, `recreate_collection` → `create_collection_if_not_exists + uuid5(point_id) + upsert` (idempotent), 보조 `all` / `search` subcommand 추가 | [x] |
+| `manifests/30-rag-api-deployment.yaml` | `course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/vllm-phi2-deployment.yaml` (구조) + `course/capstone-rag-llm-serving/manifests/20-vllm-deployment.yaml` (라벨 컨벤션) | (Day 6) GPU/PVC 제거, replicas 1→2, image `vllm/vllm-openai` → `docker.io/<user>/rag-api:0.1.0`, args 6→0(env 사용), env 6 종 신규(QDRANT_URL/COLLECTION/EMBED_MODEL/LLM_BASE_URL/LLM_MODEL/TOP_K), startupProbe 60×10s → 30×10s, resources 8Gi → 2Gi, RollingUpdate maxSurge=1 maxUnavailable=0, hf-cache emptyDir 1Gi | [x] |
+| `manifests/31-rag-api-service.yaml` | `course/capstone-rag-llm-serving/manifests/22-vllm-service.yaml` | (Day 6) name `vllm` → `rag-api`, port 8000 → 8001, selector `app: vllm` → `app: rag-api`, named port `http` + appProtocol http (Day 7 ServiceMonitor 호환) | [x] |
+| `manifests/40-ingress.yaml` | `.claude/skills/k8s-ml-course-author/assets/templates/manifests/ingress.yaml.tmpl` (골격) + `course/phase-2-operations/03-ingress/manifests/*` (rules 구조) | (Day 6) ingressClassName 생략 (GCE 기본), nginx annotations 제거 (`kubernetes.io/ingress.class: gce` 만), host placeholder `<EXTERNAL_IP>.nip.io`, path `/chat` + `/healthz` Prefix, backend named port `http` 참조 | [x] |
 | `helm/templates/monitoring.yaml` | Phase 3 `02-prometheus-grafana` ServiceMonitor 패턴 | RAG API + vLLM + Qdrant 3종 통합 | [ ] |
 | `helm/templates/_helpers.tpl`, `Chart.yaml` 골격 | Phase 3 `01-helm-chart/helm/` | 차트 이름 / appVersion 변경 | [ ] |
 | `manifests/25-vllm-hpa.yaml` 커스텀 메트릭 부분 | Phase 3 `03-autoscaling-hpa` prometheus-adapter 설정 | 메트릭을 `vllm:num_requests_running`으로 변경 | [ ] |
@@ -155,13 +158,14 @@
 - [x] §0 도입 — 왜 ML 엔지니어에게 필요한가 (1문단)
 - [x] §1 시스템 아키텍처 (ASCII 다이어그램 + 컴포넌트별 역할표, 80~100줄)
 - [~] §2 왜 이렇게 분리했는가 (트레이드오프, 100줄) _(Day 4: §2 도입 + §2.1 vLLM 분리 4 축 + §2.2/§2.4 한 줄 인용 / Day 5: §2.3 RAG API 분리 4 축 신규 — 배포·상태·메트릭·의존성)_
-- [x] §3 데이터 흐름 — **§3.1 챗봇 흐름(Day 5 완료) / §3.2 인덱싱 흐름(Day 2 완료) / §3.3 인덱싱 Workflow DAG(Day 3 완료)** 3 서브섹션 모두 작성됨
-  - [x] §3.1 챗봇 호출 흐름 (`/chat` → 응답) — Day 5 작성 (7 단계 ASCII 시퀀스 + 단계별 책임/latency 표 + 동기 호출 채택 근거 + streaming 미도입 결정)
+- [x] §3 데이터 흐름 — **§3.1 챗봇 흐름(Day 5 완료, Day 6 보강) / §3.2 인덱싱 흐름(Day 2 완료) / §3.3 인덱싱 Workflow DAG(Day 3 완료)** 3 서브섹션 모두 작성됨
+  - [x] §3.1 챗봇 호출 흐름 (`/chat` → 응답) — Day 5 작성 (7 단계 ASCII 시퀀스 + 단계별 책임/latency 표 + 동기 호출 채택 근거) + **Day 6 보강** (Day 5 port-forward ↔ Day 6 Ingress 호출 경로 비교 ASCII + 3 가지 운영적 차이 표)
   - [x] §3.2 인덱싱 데이터 흐름 (오프라인) — Day 2 작성 (4단계 ASCII 시퀀스 + 메타데이터 4종 보존 + 챗봇 경로와 분리 이유)
   - [x] §3.3 인덱싱 Workflow DAG (Day 3 — 클러스터 위 자동화) — 5-step DAG ASCII + Day 2↔Day 3 매핑 표 + git-clone 첫 step 결정 근거 + port-forward 차이
-- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1 Namespace + §4.2 Qdrant StatefulSet+Headless / Day 2: §4.6 인덱싱 파이프라인 / Day 3: §4.7 Argo Workflow + CronWorkflow / Day 4: §4.3 vLLM Deployment / Day 5: §4.4 자리표시 단락(Day 6 이월 안내 + 매니페스트 4 종 미리보기) / §4.5 Ingress 는 Day 6 TBD)_
+- [~] §4 핵심 매니페스트 해설 (라인 단위 주석) _(Day 1: §4.1·§4.2 / Day 2: §4.6 / Day 3: §4.7 / Day 4: §4.3 vLLM / Day 5: §4.4 자리표시 / **Day 6: §4.4 RAG API + §4.5 Ingress 본문 작성**)_
   - [x] §4.3 vLLM Deployment (Day 4: 매니페스트 4 종 표 + args 6 종 발췌 + GPU 격리 3 종 발췌 + startupProbe 발췌 + volumes 발췌 + 결정 박스 4개(이름 통일, served-model-name, GPU 노드 풀 분리, HF Secret 옵션) + Day 4 추가 컴포넌트 표)
-  - [x] §4.4 RAG API Deployment 자리표시 (Day 5: Day 6 에서 작성할 매니페스트 4 종(30/31/32/33) 미리보기 + Day 5 코드의 Dockerfile/.env.example 가 Day 6 ConfigMap/Secret 의 원본 명세서 역할 명시)
+  - [x] §4.4 RAG API Deployment (Day 6: 매니페스트 4 종 표(30/31 + Day 7 예고 32/33) + 4 발췌(env 6 종 / 3 종 Probe / resources / RollingUpdate strategy) + 결정 박스 4개(replicas=2 비대칭, env 직접 박기, livenessProbe vs readinessProbe path 분리, emptyDir vs PVC) + Day 6 추가 컴포넌트 표)
+  - [x] §4.5 Ingress (Day 6: 매니페스트 1 종 표 + 2 발췌(annotations+ingress class / rules) + 결정 박스 3개(GCE vs nginx, nip.io host, timeout 조정 Day 8 BackendConfig 로 미룸) + Day 6 추가 컴포넌트 표)
   - [x] §4.6 인덱싱 파이프라인 (Day 2: subcommand 표 + 4 코드 발췌 + idempotent 결정 박스)
   - [x] §4.7 Argo Workflow / CronWorkflow (Day 3: 매니페스트 3개 표 + 핵심 구조 발췌 + 결정 박스 4개(Workflow vs Job, volumeClaimTemplate 통합 마운트, namespace 분리+RBAC, CronWorkflow concurrencyPolicy+WorkflowTemplate 미도입) + Day 3 추가 컴포넌트 표)
 - [x] §5 RAG API 구현 노트 (Day 5: 6 소절 — §5.1 모듈 분리 원칙 표 + §5.2 retriever (e5 prefix + 모델 캐싱) + §5.3 llm_client (timeout/api_key/temperature) + §5.4 prompts (한국어 SYSTEM_PROMPT + 인용 마커) + §5.5 main (lifespan + 4 메트릭 + 결정 박스 임베딩 캐싱 3 옵션) + §5.6 tests/test_retriever 6 케이스 표)
@@ -169,7 +173,7 @@
 - [ ] §7 HPA 커스텀 메트릭 (왜 CPU 기준이 부적절한가, prometheus-adapter 흐름, 60줄)
 - [ ] §8 Helm으로 한 줄 배포 (values 분리(dev/prod), `helm install --create-namespace`, 50줄)
 - [ ] §9 검증 시나리오 (6단계, §9와 동일)
-- [~] §10 🚨 자주 하는 실수 _(Day 1: Qdrant/StatefulSet 3건 + Day 2: 인덱싱 3건 + Day 3: Argo/RBAC 3건 + Day 4: vLLM/GPU 3건(노드 풀 taint 누락·served-model-name 불일치·PVC 모델 캐시 누적) + Day 5: RAG API 3건(e5 query prefix 누락·OpenAI SDK model 누락/422·임베딩 모델 요청별 재로딩) = 15건. 추후 Day 7 ServiceMonitor·Day 8 HPA·Day 9 부하 OOM 항목 추가 예정)_
+- [~] §10 🚨 자주 하는 실수 _(Day 1: 3건 + Day 2: 3건 + Day 3: 3건 + Day 4: 3건 + Day 5: 3건 + **Day 6: Ingress/배포 3건**(named port mismatch → 502 / Docker Hub rate limit → ImagePullBackOff / GKE LoadBalancer 비용 누수) = 18건. 추후 Day 7 ServiceMonitor·Day 8 HPA·Day 9 부하 OOM 항목 추가 예정)_
 - [ ] §11 확장 아이디어 (reranker, 스트리밍, 멀티턴, RAGAS 평가, 30줄)
 - [ ] §12 다음 단계 링크 (Phase 5 또는 본인 업무 적용)
 
@@ -219,10 +223,11 @@
 - [ ] 검증: 학습자 단계 — `pytest tests/ -v` 6 케이스 PASS + port-forward 2 개 + uvicorn `/chat` 200 OK + sources 3 개(메타 4 종 + score + chunk_id) + 답변에 `[n]` 인용 마커 등장 + `/metrics` 4 메트릭 노출
 
 ### Day 6 — RAG API 클러스터 배포 + Ingress
-- [ ] `manifests/30-rag-api-deployment.yaml`, `31-rag-api-service.yaml`, `40-ingress.yaml`
-- [ ] 이미지 빌드/푸시 → Deployment 적용 → Ingress로 `/chat` 호출
-- [ ] `labs/day-06-rag-api-deploy.md`
-- [ ] 검증: end-to-end `curl http://<ingress>/chat` 200 OK
+- [x] `manifests/30-rag-api-deployment.yaml` (replicas=2, env 6 종 직접 박기, RollingUpdate maxUnavailable=0, hf-cache emptyDir 1Gi), `31-rag-api-service.yaml` (named port `http`, appProtocol http), `40-ingress.yaml` (GCE Ingress, nip.io host placeholder, /chat + /healthz Prefix)
+- [x] `labs/day-06-rag-api-deploy.md` (Goal 4/사전조건 6/Step 9/검증 8/정리 2 분기/트러블슈팅 9 — Docker Hub 빌드/푸시 sed 치환 + Deployment/Service + GCE Ingress + nip.io DNS 검증 + end-to-end /chat 200 OK + 답변에 [n] 인용 마커)
+- [x] lesson.md §3.1 보강 (Day 5 port-forward ↔ Day 6 Ingress 비교 ASCII + 3 가지 운영적 차이 표) + §4.4 신규 (4 발췌 + 결정 박스 4개) + §4.5 신규 (2 발췌 + 결정 박스 3개) + §10 (3건 추가, 총 18건), architecture.md §3.11 신규 (Ingress 라우팅 결정 4 소절 — 3 옵션 비교/nip.io 채택/timeout Day 8 미룸/Phase 5 GitOps 호환) + §7 Day 6 행 + 부록 A Day 6 항목
+- [x] `labs/README.md` Day 6 행 ✅ + 작성 완료된 lab 리스트에 day-06 추가
+- [ ] 검증: 학습자 단계 — Docker Hub 이미지 빌드/푸시 → Deployment READY=2/2 → Service /healthz 200 → Ingress ADDRESS 부여(3~5 분) → nip.io nslookup 해석 → `curl http://<IP>.nip.io/chat` 200 OK + sources 3 개(메타 4 종 + score + chunk_id) + 답변에 `[1]` `[2]` `[3]` 인용 마커
 
 ### Day 7 — ConfigMap/Secret 분리 + ServiceMonitor
 - [ ] `manifests/32-rag-api-configmap.yaml`, `33-rag-api-secret.yaml`
@@ -264,7 +269,7 @@
 - [x] Day 3 — 인덱싱 Argo Workflow 클러스터 실행 (2026-05-06)
 - [x] Day 4 — vLLM Deployment + OpenAI 호환 API 호출 검증 (2026-05-07)
 - [x] Day 5 — RAG API 구현 (retriever + LLM 결합) (2026-05-08)
-- [ ] Day 6 — RAG API Deployment + Service + Ingress
+- [x] Day 6 — RAG API Deployment + Service + Ingress (2026-05-09)
 - [ ] Day 7 — ConfigMap/Secret 분리, ServiceMonitor 추가
 - [ ] Day 8 — Grafana 대시보드 + HPA(커스텀 메트릭) 설정
 - [ ] Day 9 — 부하 테스트(hey) + 튜닝
@@ -272,9 +277,9 @@
 
 산출물 4종 관점 체크 (캡스톤은 단일 토픽이지만 4종을 만족해야 함):
 
-- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건 추가) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건 추가, 총 9건) / Day 4: §1.1 ★ Day 4 ★ 마커·§2.1 vLLM 분리 4 축·§4.3 vLLM Deployment + 결정 박스 4개·§10 (3건 추가, 총 12건) / Day 5: §1.1 ★ Day 5 ★ 안내 단락·§2.3 RAG API 분리 4 축·§3.1 챗봇 호출 흐름 7 단계·§4.4 자리표시·§5 RAG API 구현 노트 6 소절·§10 (3건 추가, 총 15건))_
-- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건 추가(49·50·51) + practice/pipelines/indexing/README.md Day 3 단락 갱신 / Day 4: manifests 4건 추가(20·21·22·23) / Day 5: practice/rag_app/ 9건 신규(Dockerfile·requirements.txt·main.py·retriever.py·llm_client.py·prompts.py·tests/__init__.py·tests/test_retriever.py·.env.example))_
-- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4·5 작성 완료, README 갱신 완료, day-06~day-10 미작성)_
+- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건, 총 9건) / Day 4: §1.1·§2.1·§4.3·§10 (3건, 총 12건) / Day 5: §2.3·§3.1·§4.4 자리표시·§5·§10 (3건, 총 15건) / **Day 6: §3.1 보강(Day 5↔Day 6 호출 경로 비교)·§4.4 RAG API Deployment 본문·§4.5 Ingress 본문·§10 (3건 추가, 총 18건))**)_
+- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건(49·50·51) + indexing README 갱신 / Day 4: manifests 4건(20·21·22·23) / Day 5: practice/rag_app/ 9건 / **Day 6: manifests 3건 추가(30·31·40))**_
+- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4·5·6 작성 완료, README 갱신 완료, day-07~day-10 미작성)_
 - [ ] **GPU 클러스터 검증** — Day 10 통합 검증 + GKE 클러스터 삭제 로그
 
 ---
@@ -414,3 +419,10 @@ gcloud container clusters delete capstone --zone us-central1-a --quiet
 - **2026-05-08 (Day 5)** — **테스트 전략 — Qdrant mock 위주 + 라이브는 lab 검증 (사용자 승인)**: tests/test_retriever.py 5+1 케이스가 모두 `MagicMock` 으로 Qdrant client + 임베딩 모델 주입. CI 친화적이고 port-forward 없이 통과. 라이브 검증은 lab Step 4(retriever 단독 호출) + Step 8(`/chat` curl) 두 곳으로 분리. QdrantRetriever.__init__ 가 `embed_model` / `qdrant_client` 인자를 옵셔널로 받아 의존성 주입 가능하게 한 것이 결정의 핵심. lesson.md §5.6 + architecture.md §3.10 에 근거 기록.
 - **2026-05-08 (Day 5)** — **임베딩 모델 lifespan 캐싱 (사용자 승인)**: 3 옵션(module singleton / FastAPI lifespan + app.state / class instance + Depends) 중 *lifespan + app.state* 채택. 결정 근거 — pytest 단위 테스트에서 `SentenceTransformer(...)` 실 호출을 우회하기 위함 (130MB 다운로드 + 1~2 분 대기 회피). production 코드는 두 인자 생략 시 lifespan 안에서 1 회 생성, 테스트 코드는 `embed_model=MagicMock()` 주입으로 같은 코드 경로를 공유. architecture.md §3.10 에 3 옵션 비교 표.
 - **2026-05-08 (Day 5)** — **자주 하는 실수 3 건 추가 (Day 5 — RAG API)**: ⑬ e5 query prefix 누락 — Day 2 인덱싱(`passage:`) 와 Day 5 검색(`query:`) 의 prefix 가 짝을 이뤄야 recall 정상. 누락 시 top_k=3 인데 0 건 또는 무관한 청크. ⑭ vLLM `model` 필드 누락 또는 served-model-name 불일치 → 422/404 — Day 4 §10 #11 의 후속 표면. ⑮ 임베딩 모델 요청별 재로딩 → p99 폭증 (Day 2 §10 #5 의 다른 표면 — 인덱싱은 batch 시간 / RAG API 는 사용자 응답 latency). 총 자주 하는 실수 12 → 15 건.
+- **2026-05-09 (Day 6)** — **GKE GCE Ingress 채택 (사용자 승인)**: 3 옵션(GCE Ingress / nginx-ingress / 본문 nginx + 부록 GKE) 중 GCE 단일 트랙. 캡스톤이 GKE 전제이므로 controller 설치 단계 없이 매니페스트 한 장으로 시작 가능. Phase 2-03 의 nginx 학습 연속성 손실은 *학습자가 무의식적으로 nginx annotations 를 복사 → GCE 가 조용히 무시* 라는 *체험형 학습* 으로 lesson.md §10 자주 하는 실수 ⑯ 에 표면화. Day 8 의 BackendConfig CRD (timeout/CDN/Cloud Armor) 와 Phase 5 GitOps 시점의 IAP/Cloud Armor 통합까지 길게 봤을 때의 결정. architecture.md §3.11.1 에 3 옵션 비교 표.
+- **2026-05-09 (Day 6)** — **nip.io host 처리 (사용자 승인)**: 3 옵션(nip.io / Host 헤더 / IP+path) 중 nip.io. 도메인 비용 0 + 실제 DNS A 레코드 해석 → 브라우저 검증 가능. Host 헤더 시뮬레이션은 `/etc/hosts` 수동 수정 부담, IP+path 만 사용은 Phase 2-03 의 host 라우팅 학습 포인트 무시. lab Step 6 에서 `nslookup <IP>.nip.io` 로 해석 동작 직접 검증. 외부 의존성 1 개(nip.io 서비스) 가 추가되지만 ML 엔지니어 학습 환경에서는 사실상 표준. architecture.md §3.11.2.
+- **2026-05-09 (Day 6)** — **이미지 레지스트리: Day 3 와 동일 Docker Hub 본인 계정 (사용자 승인)**: 3 옵션(Docker Hub 본인 계정 / GAR / 로컬 이미지 재사용) 중 Day 3 패턴 그대로. `docker.io/<user>/rag-api:0.1.0` placeholder + lab Step 3 의 sed 일괄 치환. GKE 노드는 public Docker Hub 무인증 pull. GAR 은 IAM 자동 인증으로 운영적으로 더 깔끔하지만 lab Step 3~4 추가 부담. 로컬 이미지 재사용은 GKE 가 로컬 이미지 접근 불가라 사실상 불가능. Docker Hub rate limit (anonymous 6h/100 회) 은 자주 하는 실수 ⑰ 로 표면화 + 발생 시 imagePullSecret 안내.
+- **2026-05-09 (Day 6)** — **Day 6 = 동작 / Day 7 = 분리 학습 흐름 유지**: 캡스톤 plan §7 의 Day 6/7 분리 의도 그대로 — Day 6 매니페스트 30 의 env 6 종을 *Deployment 에 직접 박기*, Day 7 에서 ConfigMap 32 + Secret 33 으로 *분리 리팩토링*. lesson.md §4.4 결정 박스 ② 에 Day 7 분리 효과 비교 표(env 변경 시 Pod 재시작 vs rollout restart, RBAC 분리 가능, Helm values 한 줄 차이) 명시. 학습자가 Day 6 lab 트러블슈팅 #2 에서 *env 한 글자 오타로 readiness 실패* 를 직접 경험하면 Day 7 ConfigMap 분리의 *체감 가치* 가 살아남.
+- **2026-05-09 (Day 6)** — **§4.4 결정 박스 4 + §4.5 결정 박스 3 = Day 4 §4.3 동등 깊이 (사용자 승인)**: §4.4 ① replicas=2 비대칭(stateless) ② env Deployment 직접 박기(Day 7 분리 예고) ③ liveness `/healthz` vs readiness `/ready` path 분리(Day 5 코드 결정의 매니페스트 표면) ④ emptyDir vs PVC RWO/RWX (130MB 모델 캐시 단순화). §4.5 ① GCE vs nginx-ingress vs LoadBalancer Service 3 옵션 ② nip.io 채택 ③ timeout 조정 Day 8 BackendConfig 로 미룸. 두 절 합쳐 약 230 줄로 Day 4 §4.3 (140 줄) 보다 길지만 Ingress 의 외부 의존성(GCE / nip.io / Docker Hub) 이 많아 자연스러움.
+- **2026-05-09 (Day 6)** — **livenessProbe vs readinessProbe path 분리 의의를 §4.4.5 결정 박스 ③ 에 결정 노트 표 형식으로**: Day 5 의 `main.py` 가 의도한 `/healthz` (프로세스 응답) vs `/ready` (lifespan 완료) 분리는 K8s 측 `livenessProbe` (재시작 트리거) vs `readinessProbe` (Service endpoint 제거) 의 *목적 차이* 와 정확히 매핑. 두 path 를 같게 두면 lifespan 진행 중 livenessProbe 가 503 받아 *무한 재시작 루프* — 이를 lesson.md §4.4 결정 박스 ③ 에 표 형식으로 정리. Day 5 의 분리 결정이 Day 6 매니페스트의 *기반 명세* 로 작용함을 학습자가 인지하도록 하는 의도.
+- **2026-05-09 (Day 6)** — **자주 하는 실수 3 건 추가 (Day 6 — Ingress/배포)**: ⑯ Service named port `http` 미선언 → Ingress 502 Bad Gateway. 진단 명령(`kubectl get svc -o jsonpath='{.spec.ports[*].name}'`) + named port vs number 트레이드오프. ⑰ Docker Hub anonymous pull 6h/100 회 rate limit → ImagePullBackOff 429. 해결 단계(`imagePullPolicy: IfNotPresent` + tag 핀 → docker login + imagePullSecret → GAR 마이그레이션) 3 단 안내. ⑱ GKE LoadBalancer 비용 누수 — Ingress 시간당 \$0.025, 5 일 \$3, 한 달 \$20+. lab 정리 분기에 `kubectl delete ingress` 강조 + GCP Console External IP addresses 모니터링 안내. 총 자주 하는 실수 15 → 18 건.

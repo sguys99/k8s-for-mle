@@ -1,0 +1,64 @@
+# 출처:
+#   ① 골격 → .claude/skills/k8s-ml-course-author/assets/templates/manifests/ingress.yaml.tmpl
+#   ② 구조 참고 → course/phase-2-operations/03-ingress/manifests/* (rules / pathType 패턴)
+#
+# 캡스톤 Day 6 — 외부 client 가 RAG API 의 /chat 을 호출할 진입점.
+# Phase 2-03 의 nginx-ingress 패턴과 의도적으로 *다릅니다* — 본 캡스톤은 GKE 환경 전제이므로
+# GCE(Google Cloud) Ingress controller 를 사용합니다. nginx 와의 차이 4 가지:
+#   ① ingressClassName 생략 — GKE 는 본 필드 없으면 GCE controller 가 자동 처리
+#      (명시하려면 `ingressClassName: gce`. nginx 환경이라면 `nginx`)
+#   ② annotations 단순화 — Phase 2-03 의 `nginx.ingress.kubernetes.io/*` 들은 GCE 에서 *무시* 됨.
+#      timeout 조정은 Day 8 의 BackendConfig CRD 로 별도 처리 (lesson.md §4.5 결정 박스 ③)
+#   ③ host 는 학습자 외부 IP 기준 nip.io 로 lab Step 6 에서 sed 치환:
+#      `<EXTERNAL_IP>.nip.io` (예: `34.123.45.67.nip.io`)
+#      nip.io 는 와일드카드 DNS 서비스 — A 레코드를 도메인에서 IP 로 즉시 해석합니다.
+#   ④ /healthz 경로도 외부 노출 — GCE Ingress 의 health check 가 backend 의 / 경로를 호출할 수 있어
+#      RAG API 의 /healthz 를 명시적으로 노출하면 health check 진단이 쉬워짐 (자주 하는 실수 ⑯ 진단)
+#
+# 외부 IP 획득 흐름 (lab Step 5):
+#   apply → GCE controller 가 LoadBalancer + forwarding rule + health check 생성 (3~5 분)
+#   → status.loadBalancer.ingress[0].ip 채워짐
+#   → kubectl get ingress -n rag-llm rag-api -w 로 ADDRESS 컬럼 모니터링
+#
+# 비용 주의 (자주 하는 실수 ⑱):
+#   GCE LoadBalancer 는 시간당 약 $0.025 + 데이터 전송 비용. Day 6 → Day 10 4~5 일 동안 켜두면 약 $3.
+#   Day 끝에 lab 정리 절차로 `kubectl delete ingress rag-api -n rag-llm` 실행 시 자동 회수됩니다.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rag-api
+  namespace: rag-llm
+  labels:
+    app: rag-api
+    component: rag-api
+  # GCE 가 인식하는 annotation 만 명시. nginx 전용은 모두 제외.
+  annotations:
+    # GCE Ingress 가 자동 생성하는 LoadBalancer 의 타입을 명시 (External 이 기본값이라 생략 가능).
+    # Internal 로 바꾸면 VPC 내부에서만 접근 가능 — 본 학습 단계에서는 External 유지.
+    kubernetes.io/ingress.class: "gce"
+spec:
+  rules:
+    # host 는 lab Step 6 에서 `<EXTERNAL_IP>.nip.io` 형태로 sed 치환합니다.
+    # 예: 34.123.45.67.nip.io → DNS A 레코드가 자동으로 34.123.45.67 로 해석.
+    # placeholder 그대로 두면 GCE Ingress 가 host 매칭 실패해 모든 요청이 default backend 로 향함.
+    - host: <EXTERNAL_IP>.nip.io
+      http:
+        paths:
+          # /chat — RAG API 의 핵심 엔드포인트. POST 만 사용하지만 Ingress 는 method 구분 안 함.
+          - path: /chat
+            pathType: Prefix                              # /chat, /chat/, /chat/anything 모두 매칭
+            backend:
+              service:
+                name: rag-api                             # 31-rag-api-service.yaml 의 metadata.name
+                port:
+                  name: http                              # 31 의 ports.name 참조. number(8001) 도 가능하지만 name 권장 (자주 하는 실수 ⑯).
+          # /healthz — 외부에서 RAG API 헬스 확인용. GCE health check 와 별개.
+          - path: /healthz
+            pathType: Prefix
+            backend:
+              service:
+                name: rag-api
+                port:
+                  name: http
+  # TLS 미설정 — Day 6 학습 단계는 HTTP 만. Day 10 Helm 차트에서 cert-manager + Let's Encrypt 옵션 안내.

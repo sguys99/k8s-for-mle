@@ -1,0 +1,32 @@
+# 출처: course/capstone-rag-llm-serving/manifests/22-vllm-service.yaml (캡스톤 형제 매니페스트)
+#
+# 캡스톤 Day 6 — RAG API Pod 앞에 붙는 ClusterIP Service.
+# Day 4 의 vLLM Service(22) 와 동일 패턴, 4 가지만 다릅니다:
+#   ① name vllm → rag-api
+#   ② port 8000 → 8001 (Pod containerPort 8001 와 일치)
+#   ③ selector app=vllm → app=rag-api
+#   ④ Day 7 ServiceMonitor 호환을 위해 named port `http` 명시
+#      (자주 하는 실수 ⑯ — Ingress backend 가 port.name 사용 시 Service 에 name 미선언이면 unhealthy)
+#
+# 본 Service 의 두 호출자:
+#   1) Day 6 Ingress 40 — 외부 client(/chat) → Ingress → 본 Service → RAG API Pod
+#   2) Day 7 ServiceMonitor 34 — Prometheus → 본 Service `http` 포트 → /metrics 30s 간격 scrape
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-api
+  namespace: rag-llm
+  labels:
+    app: rag-api
+    component: rag-api
+spec:
+  type: ClusterIP                                       # 외부 노출은 Ingress(40) 만 담당. 본 Service 는 클러스터 내부 endpoint.
+  selector:
+    app: rag-api                                        # Deployment 30 의 template.metadata.labels.app 와 매칭
+  ports:
+    - name: http                                        # Day 7 ServiceMonitor 의 endpoints.port: http 와 이름 일치 필수
+      port: 8001                                        # 클러스터 내부 호출 포트 (rag-api.rag-llm.svc.cluster.local:8001)
+      targetPort: http                                  # Deployment 30 의 ports.name=http 참조 — 컨테이너 포트 변경 시 추적 쉬움
+      protocol: TCP
+      appProtocol: http                                 # GCE Ingress 의 backend protocol 자동 감지(HTTP1) 에 사용. Day 6 Ingress 가 참조.
