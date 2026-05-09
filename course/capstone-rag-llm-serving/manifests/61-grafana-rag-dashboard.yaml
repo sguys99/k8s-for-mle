@@ -1,0 +1,233 @@
+# 출처:
+#   ① 골격(JSON 구조) → course/phase-3-production/02-prometheus-grafana/manifests/grafana-dashboards/sentiment-api-dashboard.json
+#                       (4 패널 + 변수 + __inputs/__requires/templating + fieldConfig 패턴)
+#   ② sidecar 메커니즘 → course/phase-3-production/02-prometheus-grafana/manifests/kube-prometheus-stack/values.yaml
+#                       (grafana.sidecar.dashboards.label = "grafana_dashboard", labelValue = "1")
+#   ③ 메트릭 정의       → course/capstone-rag-llm-serving/lesson.md §6.1 (RAG API 4 종) + §6.2 (vLLM 6 종)
+#                       course/capstone-rag-llm-serving/practice/rag_app/main.py:44-47 (Counter + Histogram 3)
+#
+# 캡스톤 Day 8 — RAG-LLM Capstone 통합 대시보드 4 패널.
+# Grafana sidecar 가 본 ConfigMap 의 `grafana_dashboard: "1"` 라벨을 watch 해 자동 import.
+# Day 7 의 kube-prometheus-stack(release=prom) 이 sidecar 활성화 — 별도 UI 작업 없음.
+#
+# 4 패널 구성 (lesson.md §6 의 10 메트릭 중 4 개 시각화):
+#   ① /chat 요청량 (req/s, status별)            — RAG API rag_chat_total Counter rate
+#   ② /chat 응답 latency p95 (단계별 분해)        — chat / retrieve / llm 3 종 Histogram
+#   ③ vLLM 동시 요청 수 (running vs waiting)     — vllm:num_requests_running + waiting Gauge
+#   ④ vLLM GPU KV cache 사용률                  — vllm:gpu_cache_usage_perc Gauge
+#
+# 결정 — capstone-plan §7 Day 8 의 4 패널 (RAG latency / vLLM tokens / GPU 메모리 / retriever hit-ratio) 중
+#         "retriever hit-ratio" 는 main.py 에 메트릭 부재. 대신 lesson.md §6.1 의 RAG API 4 메트릭으로 교체:
+#         chat rate / chat p95 / retrieve p95 / llm p95 → 1 개 패널에 단계별 분해(②번)
+#         + GPU 메모리 → KV cache 사용률(④번) 로 의미 동등 시각화. (architecture.md §3.13 보강 메모)
+#
+# sidecar 라벨 매칭 (Phase 3-02 패턴):
+#   Grafana Pod 의 sidecar 컨테이너가 모든 namespace 의 ConfigMap 중 라벨 `grafana_dashboard: "1"` 만 watch.
+#   매칭된 ConfigMap 의 data 안 .json 키들이 Grafana 의 dashboards/ 디렉토리로 자동 파일링.
+#   Pod 재시작 없이 ~30 초 안에 Grafana UI > Dashboards > "RAG-LLM Capstone" 등장.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-llm-grafana-dashboard
+  namespace: monitoring                       # ⚠ Grafana sidecar 가 모든 namespace watch 하지만, 관행상 monitoring
+  labels:
+    grafana_dashboard: "1"                    # ⚠ Grafana sidecar 가 watch 하는 라벨 — 누락 시 import 안 됨
+    app: rag-llm
+    component: dashboard
+data:
+  # 키 이름은 .json 확장자 필수 — Grafana sidecar 가 파일명으로 사용.
+  rag-llm.json: |
+    {
+      "__inputs": [
+        {
+          "name": "DS_PROMETHEUS",
+          "label": "Prometheus",
+          "description": "kube-prometheus-stack 이 자동 등록한 Prometheus 데이터소스",
+          "type": "datasource",
+          "pluginId": "prometheus",
+          "pluginName": "Prometheus"
+        }
+      ],
+      "__requires": [
+        { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+        { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+        { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+        { "type": "panel", "id": "gauge", "name": "Gauge", "version": "" }
+      ],
+      "title": "RAG-LLM Capstone",
+      "uid": "rag-llm-capstone",
+      "tags": ["capstone", "rag", "vllm"],
+      "timezone": "browser",
+      "schemaVersion": 38,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-30m", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+            "query": "label_values(rag_chat_total, namespace)",
+            "current": { "text": "rag-llm", "value": "rag-llm" },
+            "refresh": 2,
+            "includeAll": false,
+            "multi": false
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "/chat 요청량 (req/s) — status별",
+          "description": "rag_chat_total Counter 의 초당 증가율. status 라벨(ok/not_ready/bad_request/error)별 stack.\n\nPromQL: sum by (status) (rate(rag_chat_total{namespace=\"$namespace\"}[2m]))\n\nDay 8 HPA 35 의 입력 메트릭과 동일 — 패널의 ok 합계가 averageValue=10 도달 시 RAG API 가 scale-out.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            {
+              "expr": "sum by (status) (rate(rag_chat_total{namespace=\"$namespace\"}[2m]))",
+              "legendFormat": "{{status}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 30,
+                "stacking": { "mode": "normal", "group": "A" }
+              }
+            }
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] }
+          }
+        },
+        {
+          "id": 2,
+          "title": "/chat 응답 latency p95 — 단계별 분해",
+          "description": "RAG API 의 단계별 p95 latency. 어디가 병목인지 즉시 파악 가능.\n  - chat : 전체 /chat 응답\n  - retrieve : Qdrant 검색 + e5 인코딩\n  - llm : vLLM /v1/chat/completions 호출\n\nchat ≈ retrieve + llm + 직렬화. retrieve > llm 이면 e5 모델/Qdrant 튜닝, llm > retrieve 면 vLLM 튜닝(Day 9).",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_chat_latency_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+              "legendFormat": "chat (전체)",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_retrieve_latency_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+              "legendFormat": "retrieve (Qdrant)",
+              "refId": "B"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_llm_latency_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+              "legendFormat": "llm (vLLM)",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 2.0 },
+                  { "color": "red", "value": 5.0 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 3,
+          "title": "vLLM 동시 요청 수 (running vs waiting)",
+          "description": "running = continuous batching 으로 GPU 가 동시 처리 중인 요청 수.\nwaiting = KV cache 부족으로 대기 중인 요청 수.\n\nrunning 8~16 = 정상 운영, waiting > 0 = GPU 메모리 한계 신호.\nDay 8 HPA 25 가 running 평균 8 도달 시 vLLM 을 scale-out.\n\nPromQL: vllm:num_requests_running, vllm:num_requests_waiting",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            {
+              "expr": "vllm:num_requests_running{namespace=\"$namespace\"}",
+              "legendFormat": "running",
+              "refId": "A"
+            },
+            {
+              "expr": "vllm:num_requests_waiting{namespace=\"$namespace\"}",
+              "legendFormat": "waiting",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 20
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 8 },
+                  { "color": "red", "value": 16 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 4,
+          "title": "vLLM GPU KV cache 사용률",
+          "description": "PagedAttention 의 KV cache 사용률 (0.0 ~ 1.0).\n0.9+ 이면 max-model-len 축소 또는 gpu-memory-utilization 튜닝 검토 (Day 9).\n0.95 부근이 정상 운영 — 너무 낮으면 GPU 자원 낭비.\n\nPromQL: vllm:gpu_cache_usage_perc",
+          "type": "gauge",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            {
+              "expr": "vllm:gpu_cache_usage_perc{namespace=\"$namespace\"}",
+              "legendFormat": "KV cache",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.7 },
+                  { "color": "red", "value": 0.95 }
+                ]
+              }
+            }
+          },
+          "options": {
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true,
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            }
+          }
+        }
+      ]
+    }

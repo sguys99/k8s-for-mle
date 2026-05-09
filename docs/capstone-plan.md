@@ -32,7 +32,7 @@
 - [ ] 학습 목표 2: vLLM으로 SLM을 K8s에 서빙하고 OpenAI 호환 API로 RAG API에서 호출할 수 있다
 - [ ] 학습 목표 3: Qdrant 벡터 DB를 StatefulSet으로 운영하고 PVC로 인덱스를 영속화할 수 있다
 - [ ] 학습 목표 4: retrieval → augmentation → generation으로 이어지는 RAG 파이프라인을 K8s 환경에서 구현할 수 있다
-- [ ] 학습 목표 5: Prometheus/Grafana로 멀티 컴포넌트 시스템을 모니터링하고 HPA(커스텀 메트릭)로 LLM 서빙을 오토스케일링할 수 있다
+- [x] 학습 목표 5: Prometheus/Grafana로 멀티 컴포넌트 시스템을 모니터링하고 HPA(커스텀 메트릭)로 LLM 서빙을 오토스케일링할 수 있다 _(Day 7: kube-prometheus-stack + ServiceMonitor 24/34 → Prometheus Targets UP / Day 8: prometheus-adapter + HPA 25/35 + Grafana 대시보드 4 패널 + hey 60s 부하 REPLICAS 변동)_
 - [ ] 학습 목표 6: 캡스톤 시스템 전체를 Helm 차트 한 줄로 배포·롤백할 수 있다
 
 **완료 기준 (1줄)**: `curl http://<ingress-host>/chat -d '{"messages":[{"role":"user","content":"K8s에서 GPU 어떻게 잡지?"}],"top_k":3}'` → 200 OK + 답변 텍스트 + 인용 문서 3개
@@ -60,13 +60,15 @@
 - [x] `22-vllm-service.yaml` ← (Day 4: namespace + 라벨 + 이름 `vllm` + selector `app=vllm`)
 - [x] `23-vllm-hf-secret.yaml` ← (Day 4: namespace + 라벨 + 주석 보강 — phi-2 public 이라 옵션 처리)
 - [x] `24-vllm-servicemonitor.yaml` ← Day 7 (Phase 4-3 이식 5 변경점 — name `vllm-phi2`→`vllm`, namespace 추가, selector `app=vllm`, release 라벨 `prom`, 캡스톤 컨벤션 라벨)
-- [ ] `25-vllm-hpa.yaml` ★ (prometheus-adapter + `vllm:num_requests_running`)
+- [x] `25-vllm-hpa.yaml` ★ Day 8 (prometheus-adapter + `vllm_num_requests_running` 별칭, Pods averageValue=8, minReplicas=1/maxReplicas=2, behavior 비대칭 scaleUp 0s/scaleDown 300s)
 - [x] `30-rag-api-deployment.yaml` ★ Day 6 (replicas=2, env 6 종 직접 박기, /healthz/liveness + /ready/readiness/startup, hf-cache emptyDir 1Gi, RollingUpdate maxSurge=1 maxUnavailable=0) → **Day 7 envFrom 리팩토링** (env 7 줄 → configMapRef + secretRef.optional 2 줄)
 - [x] `31-rag-api-service.yaml` ★ Day 6 (ClusterIP 8001, named port `http`, appProtocol http — Day 7 ServiceMonitor + Day 6 Ingress 공통 endpoint)
 - [x] `32-rag-api-configmap.yaml` ★ Day 7 (data 6 키 — QDRANT_URL/COLLECTION/EMBED_MODEL/LLM_BASE_URL/LLM_MODEL/TOP_K, Day 6 env 6 종 *그대로 이전*)
 - [x] `33-rag-api-secret.yaml` ★ Day 7 (Opaque, stringData HF_TOKEN placeholder, 23-vllm-hf-secret 와 *별도 Secret*, optional: true 부재 허용)
 - [x] `34-rag-api-servicemonitor.yaml` ★ Day 7 (selector `app=rag-api`, endpoints `port: http` interval 30s, release 라벨 `prom` 으로 Prometheus CR 매칭)
-- [ ] `35-rag-api-hpa.yaml` ★ (RPS 기준)
+- [x] `35-rag-api-hpa.yaml` ★ Day 8 (Pods 메트릭 `rag_chat_requests_per_second` Counter rate 변환 averageValue=10, minReplicas=2/maxReplicas=6, behavior 동일 비대칭, scaleTargetRef Deployment/rag-api)
+- [x] `60-prometheus-adapter-values.yaml` ★ Day 8 (helm values, rules.custom 2 규칙 — RAG `_total`→`_requests_per_second` rate 변환 + vLLM `vllm:` 콜론 별칭, Prometheus URL `prom-kube-prometheus-stack-prometheus.monitoring.svc:9090`)
+- [x] `61-grafana-rag-dashboard.yaml` ★ Day 8 (ConfigMap `monitoring` namespace + `grafana_dashboard: "1"` 라벨로 sidecar 자동 import, 4 패널 — chat req/s status별 / latency p95 chat·retrieve·llm 분해 / vLLM running·waiting / GPU KV cache gauge)
 - [x] `40-ingress.yaml` ★ Day 6 (GCE Ingress, `<EXTERNAL_IP>.nip.io` host placeholder, /chat + /healthz Prefix, named port 참조, BackendConfig 미적용 — Day 8 예정)
 - [x] `50-indexing-workflow.yaml` ← Phase 4-4 (Day 3: namespace 변경 + git-clone step 1개 신규 추가로 5-step DAG + 이미지 레지스트리 placeholder + env 6종 주입 + volumeClaimTemplate 통합 마운트)
 - [x] `51-indexing-cronworkflow.yaml` ← Phase 4-4 (Day 3: workflowSpec 본문을 50과 동기화, embedding-model 기본값 `intfloat/multilingual-e5-small` 로 갱신)
@@ -121,7 +123,7 @@
 - [x] `labs/day-05-rag-api-impl.md` ★ _(Day 5: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 2 분기/트러블슈팅 9항목)_
 - [x] `labs/day-06-rag-api-deploy.md` ★ _(Day 6: Goal 4/사전조건 6/Step 9/검증 체크리스트 8/정리 2 분기/트러블슈팅 9항목 — Docker Hub 빌드/푸시 + Deployment/Service + GCE Ingress + nip.io 검증)_
 - [x] `labs/day-07-config-secret-monitoring.md` ★ _(Day 7: Goal 4/사전조건 5/Step 8/검증 체크리스트 8/정리 2 분기/트러블슈팅 8항목 + Qdrant ServiceMonitor 부록 — ConfigMap/Secret 분리 + envFrom + kube-prometheus-stack + ServiceMonitor 2 종 + PromQL)_
-- [ ] `labs/day-08-grafana-hpa.md` ★
+- [x] `labs/day-08-grafana-hpa.md` ★ _(Day 8: Goal 4/사전조건 5/Step 8/검증 체크리스트 8/정리 2 분기/트러블슈팅 8항목 — Grafana sidecar 자동 import + prometheus-adapter Helm + custom.metrics.k8s.io API 노출 + HPA 2 적용 + hey 60s c=8 부하 + REPLICAS 변동(rag-api 2→4, vllm 1→2 두 번째 Pending) + Grafana 4 패널 동시 변동)_
 - [ ] `labs/day-09-load-test-tuning.md` ★
 - [ ] `labs/day-10-integration-cleanup.md` ★
 
@@ -144,7 +146,10 @@
 | `manifests/40-ingress.yaml` | `.claude/skills/k8s-ml-course-author/assets/templates/manifests/ingress.yaml.tmpl` (골격) + `course/phase-2-operations/03-ingress/manifests/*` (rules 구조) | (Day 6) ingressClassName 생략 (GCE 기본), nginx annotations 제거 (`kubernetes.io/ingress.class: gce` 만), host placeholder `<EXTERNAL_IP>.nip.io`, path `/chat` + `/healthz` Prefix, backend named port `http` 참조 | [x] |
 | `helm/templates/monitoring.yaml` | Phase 3 `02-prometheus-grafana` ServiceMonitor 패턴 | RAG API + vLLM + Qdrant 3종 통합 | [ ] |
 | `helm/templates/_helpers.tpl`, `Chart.yaml` 골격 | Phase 3 `01-helm-chart/helm/` | 차트 이름 / appVersion 변경 | [ ] |
-| `manifests/25-vllm-hpa.yaml` 커스텀 메트릭 부분 | Phase 3 `03-autoscaling-hpa` prometheus-adapter 설정 | 메트릭을 `vllm:num_requests_running`으로 변경 | [ ] |
+| `manifests/25-vllm-hpa.yaml` | Phase 3-03 `manifests/hpa-custom-metric.yaml` | (Day 8) Pods 메트릭 `predict_requests_per_second` → `vllm_num_requests_running` (adapter 별칭), scaleTargetRef Deployment/vllm, averageValue=8, minReplicas=1/maxReplicas=2 (T4 노드 풀 1 대 *체험형 학습 설계*), namespace `prod` → `rag-llm`, autoscaler 라벨 `rps` → `requests-running` | [x] |
+| `manifests/35-rag-api-hpa.yaml` | Phase 3-03 `manifests/hpa-custom-metric.yaml` (형제) + `manifests/25-vllm-hpa.yaml` (캡스톤 라벨) | (Day 8) Pods 메트릭 `predict_requests_per_second` → `rag_chat_requests_per_second`, scaleTargetRef Deployment/rag-api, averageValue=10 (Day 7 측정 12 RPS 의 80% 안전선), minReplicas=2/maxReplicas=6, behavior 동일 비대칭 | [x] |
+| `manifests/60-prometheus-adapter-values.yaml` | Phase 3-03 `manifests/prometheus-adapter/values.yaml` | (Day 8) rules.custom 1 → 2 규칙 — 규칙 1: RAG `_total` → `_requests_per_second` rate(2m) 변환 / 규칙 2 신규: vLLM `vllm:` 콜론을 `vllm_` 언더스코어 별칭(K8s API path 안전성) + Gauge `avg()` 쿼리, Prometheus URL 동일 | [x] |
+| `manifests/61-grafana-rag-dashboard.yaml` | Phase 3-02 `manifests/grafana-dashboards/sentiment-api-dashboard.json` (JSON 골격) + `manifests/kube-prometheus-stack/values.yaml` (sidecar 라벨 매칭 메커니즘) | (Day 8) ConfigMap wrapper 신규(namespace=`monitoring`, label `grafana_dashboard: "1"`), title `Sentiment API` → `RAG-LLM Capstone`, 4 패널 PromQL 을 RAG/vLLM 메트릭으로 교체 — chat req/s status별 / latency p95 chat·retrieve·llm 단계별 분해 / vLLM running·waiting / GPU KV cache gauge(타입 stat→gauge 추가) | [x] |
 
 **원칙**: 가져온 자산은 **출처 주석**(`# from course/phase-4-ml-on-k8s/04-argo-workflows/...`)을 매니페스트 상단에 답니다. lesson.md에서도 "Phase 4-X에서 익힌 ~~를 그대로 사용한다"고 명시해 학습 누적성을 강조합니다.
 
@@ -171,11 +176,11 @@
   - [x] §4.8 ConfigMap / Secret 분리 (Day 7: 매니페스트 2 종 + Deployment 30 변경 표 + envFrom 일괄 발췌 + 결정 박스 4개(ConfigMap 1개 통합, Secret 별도 33 vs 23 재사용, envFrom vs env.valueFrom, ConfigMap 변경 시 재시작 4 옵션) + Day 7 추가 컴포넌트 표 (1))
   - [x] §4.9 ServiceMonitor (Day 7: 매니페스트 2 종 표 + RAG API ServiceMonitor 발췌 + 라벨 매칭 2 단계 ASCII + 결정 박스 3개(kube-prometheus-stack vs 직접 작성 vs GMP, release 라벨 `prom`, Qdrant ServiceMonitor 4 옵션) + Day 7 추가 컴포넌트 표 (2))
 - [x] §5 RAG API 구현 노트 (Day 5: 6 소절 — §5.1 모듈 분리 원칙 표 + §5.2 retriever (e5 prefix + 모델 캐싱) + §5.3 llm_client (timeout/api_key/temperature) + §5.4 prompts (한국어 SYSTEM_PROMPT + 인용 마커) + §5.5 main (lifespan + 4 메트릭 + 결정 박스 임베딩 캐싱 3 옵션) + §5.6 tests/test_retriever 6 케이스 표)
-- [x] §6 모니터링 핵심 메트릭 (Day 7: 4 축 소절 — §6.1 RAG API 메트릭 4 종 표 + §6.2 vLLM 메트릭 6 종 표 + §6.3 Qdrant 메트릭 부재 명시 + Day 10 도입 예고 + §6.4 GPU(DCGM) 메트릭 + 4 축 본 캡스톤 깊이 요약)
-- [ ] §7 HPA 커스텀 메트릭 (왜 CPU 기준이 부적절한가, prometheus-adapter 흐름, 60줄)
+- [x] §6 모니터링 핵심 메트릭 (Day 7: 4 축 소절 — §6.1 RAG API 메트릭 4 종 표 + §6.2 vLLM 메트릭 6 종 표 + §6.3 Qdrant 메트릭 부재 명시 + Day 10 도입 예고 + §6.4 GPU(DCGM) 메트릭 + 4 축 본 캡스톤 깊이 요약 / **Day 8 보강**: 4 패널 정의 갱신 — capstone-plan §7 초안의 *retriever hit-ratio* 패널을 §6.1 의 4 RAG 메트릭 단계별 분해(②번)로 교체, *GPU 메모리* 는 KV cache 사용률(④번)로 동등 시각화 명시)
+- [x] §7 HPA 커스텀 메트릭 (Day 8: §7.1 왜 CPU 가 아닌 vllm:num_requests_running 인가 표 3 행 + §7.2 prometheus-adapter 4 단계 ASCII 다이어그램 + 단계별 검증 표 + §7.3 매니페스트 4 종 표 + 4 핵심 발췌 + 결정 박스 4개(num_requests_running 채택 / RAG Counter rate 변환 / behavior 비대칭 / maxReplicas=2 학습 설계) + §7.4 검증 명령 3 종 — 약 130 줄)
 - [ ] §8 Helm으로 한 줄 배포 (values 분리(dev/prod), `helm install --create-namespace`, 50줄)
 - [ ] §9 검증 시나리오 (6단계, §9와 동일)
-- [~] §10 🚨 자주 하는 실수 _(Day 1: 3건 + Day 2: 3건 + Day 3: 3건 + Day 4: 3건 + Day 5: 3건 + Day 6: Ingress/배포 3건 + **Day 7: ConfigMap/Secret/ServiceMonitor 3건**(#19 ServiceMonitor `release` 라벨 누락 → Targets 빈 상태 / #20 ConfigMap 변경 후 Pod 재시작 누락 → 옛값 / #21 Secret `data` vs `stringData` 혼동 → 깨진 토큰) = 21건. 추후 Day 8 HPA·Day 9 부하 OOM 항목 추가 예정)_
+- [~] §10 🚨 자주 하는 실수 _(Day 1: 3건 + Day 2: 3건 + Day 3: 3건 + Day 4: 3건 + Day 5: 3건 + Day 6: Ingress/배포 3건 + Day 7: ConfigMap/Secret/ServiceMonitor 3건 + **Day 8: HPA/Grafana/adapter 3건**(#22 prometheus-adapter `<<.LabelMatchers>>` template syntax 누락 → adapter Ready 인데 메트릭 미노출 / #23 HPA `scaleTargetRef.kind: ReplicaSet` 또는 ReplicaSet 이름 사용 → HPA 가 아무 일도 안 함 / #24 vLLM replicas 가 *왜 안 늘어나는가* 오해 → maxReplicas=2 + GPU 노드 풀 1 대 의 *체험형 학습 설계* 임을 인지) = 24건. 추후 Day 9 부하 OOM·Day 10 Helm checksum 항목 추가 예정)_
 - [ ] §11 확장 아이디어 (reranker, 스트리밍, 멀티턴, RAGAS 평가, 30줄)
 - [ ] §12 다음 단계 링크 (Phase 5 또는 본인 업무 적용)
 
@@ -241,11 +246,13 @@
 - [ ] 검증: 학습자 단계 — ConfigMap/Secret apply → Deployment 30 envFrom 리팩토링 + `kubectl rollout restart` → kube-prometheus-stack `prom` release 설치(`monitoring` namespace) → ServiceMonitor 24/34 apply → Prometheus Targets 페이지 vllm + rag-api UP + PromQL `rate(rag_chat_total[1m])` / `vllm:num_requests_running` 그래프 확인 + Day 6 의 `/chat` 1 줄 완료 기준 회귀 없음
 
 ### Day 8 — Grafana 대시보드 + HPA
-- [ ] `manifests/25-vllm-hpa.yaml`, `35-rag-api-hpa.yaml`
-- [ ] Grafana 대시보드 JSON (RAG latency / vLLM tokens / GPU 메모리 / retriever hit-ratio)
-- [ ] prometheus-adapter 설치 → HPA 적용 → 부하로 스케일 트리거
-- [ ] `labs/day-08-grafana-hpa.md`
-- [ ] 검증: `kubectl get hpa` REPLICAS 변동 확인
+- [x] `manifests/25-vllm-hpa.yaml`, `35-rag-api-hpa.yaml` (Pods 메트릭 + behavior 비대칭, scaleTargetRef Deployment 명시)
+- [x] `manifests/60-prometheus-adapter-values.yaml` (helm values, rules.custom 2 규칙) + `manifests/61-grafana-rag-dashboard.yaml` (ConfigMap, sidecar 자동 import 4 패널 — 초안의 retriever hit-ratio → §6.1 4 메트릭 단계별 분해 패널로 교체)
+- [x] prometheus-adapter Helm 설치 → HPA 적용 → hey 60s c=8 부하로 스케일 트리거 (학습자 단계에서 검증)
+- [x] `labs/day-08-grafana-hpa.md` (Goal 4/사전조건 5/Step 8/검증 8/정리 2 분기/트러블슈팅 8)
+- [x] lesson.md §6 보강 + §7 신규(~130 줄, 결정 박스 4개) + §10 (3건 추가, 총 24건), architecture.md §3.13 신규 4 소절(HPA 결정 노트 — vLLM 메트릭 3 옵션·RAG API 필요성·behavior 비대칭·maxReplicas=2 학습 설계) + §5 메트릭 표 ◉/★ 마킹 + §7 Day 8 행 + 부록 A Day 8 항목 + 이식 원본 3 건 추가
+- [x] `labs/README.md` Day 8 행 표 ✅ + 작성 완료된 lab 리스트에 day-08 추가
+- [ ] 검증: 학습자 단계 — Grafana sidecar 자동 import 30 초 안에 "RAG-LLM Capstone" 4 패널 등장 → prometheus-adapter Pod Ready → `kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1"` 결과 `pods/rag_chat_requests_per_second` + `pods/vllm_num_requests_running` 두 줄 → HPA TARGETS=`0/8`, `0/10` 안정화(60s) → hey 60s c=8 부하로 RAG API 2→4 / vLLM 1→2(두 번째 Pending) REPLICAS 변동 + Grafana 4 패널 동시 변동 + 부하 종료 후 5 분 stabilization 동안 REPLICAS 유지
 
 ### Day 9 — 부하 테스트 + 튜닝
 - [ ] `practice/llm_serving/load_test.sh`
@@ -276,15 +283,15 @@
 - [x] Day 5 — RAG API 구현 (retriever + LLM 결합) (2026-05-08)
 - [x] Day 6 — RAG API Deployment + Service + Ingress (2026-05-09)
 - [x] Day 7 — ConfigMap/Secret 분리, ServiceMonitor 추가 (2026-05-09)
-- [ ] Day 8 — Grafana 대시보드 + HPA(커스텀 메트릭) 설정
+- [x] Day 8 — Grafana 대시보드 + HPA(커스텀 메트릭) 설정 (2026-05-10)
 - [ ] Day 9 — 부하 테스트(hey) + 튜닝
 - [ ] Day 10 — 통합 검증 + 문서화 + 클러스터 삭제
 
 산출물 4종 관점 체크 (캡스톤은 단일 토픽이지만 4종을 만족해야 함):
 
-- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건, 총 9건) / Day 4: §1.1·§2.1·§4.3·§10 (3건, 총 12건) / Day 5: §2.3·§3.1·§4.4 자리표시·§5·§10 (3건, 총 15건) / Day 6: §3.1 보강·§4.4·§4.5·§10 (3건, 총 18건) / **Day 7: §4.8 ConfigMap/Secret 신규·§4.9 ServiceMonitor 신규·§6 모니터링 4 축 본문·§10 (3건 추가, 총 21건))**)_
-- [~] **매니페스트/코드** — `manifests/`(18개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건(49·50·51) + indexing README 갱신 / Day 4: manifests 4건(20·21·22·23) / Day 5: practice/rag_app/ 9건 / Day 6: manifests 3건 추가(30·31·40) / **Day 7: manifests 4건 추가(32·33·24·34) + Deployment 30 envFrom 리팩토링)**_
-- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4·5·6·7 작성 완료, README 갱신 완료, day-08~day-10 미작성)_
+- [~] **lesson.md** — `course/capstone-rag-llm-serving/lesson.md` 13개 섹션 모두 작성 _(Day 1: §0·§1·§4.1·§4.2 / Day 2: §3.2·§4.6·§10 (3건) / Day 3: §1.1 보강·§3.3·§4.7·§10 (3건, 총 9건) / Day 4: §1.1·§2.1·§4.3·§10 (3건, 총 12건) / Day 5: §2.3·§3.1·§4.4 자리표시·§5·§10 (3건, 총 15건) / Day 6: §3.1 보강·§4.4·§4.5·§10 (3건, 총 18건) / Day 7: §4.8 ConfigMap/Secret 신규·§4.9 ServiceMonitor 신규·§6 모니터링 4 축 본문·§10 (3건 추가, 총 21건) / **Day 8: §6 보강(4 패널 정의 갱신)·§7 HPA 신규(~130 줄, 결정 박스 4개)·§10 (3건 추가, 총 24건))**)_
+- [~] **매니페스트/코드** — `manifests/`(20개) + `helm/`(13개) + `practice/`(rag_app·llm_serving·pipelines) _(Day 1: manifests 3건 / Day 2: practice/pipelines/indexing/ 4건 / Day 3: manifests 3건(49·50·51) + indexing README 갱신 / Day 4: manifests 4건(20·21·22·23) / Day 5: practice/rag_app/ 9건 / Day 6: manifests 3건 추가(30·31·40) / Day 7: manifests 4건 추가(32·33·24·34) + Deployment 30 envFrom 리팩토링 / **Day 8: manifests 4건 추가(25·35·60·61))**_
+- [~] **labs/** — `labs/README.md` + `labs/day-01.md ~ day-10.md` (총 11개) _(Day 1·2·3·4·5·6·7·8 작성 완료, README 갱신 완료, day-09~day-10 미작성)_
 - [ ] **GPU 클러스터 검증** — Day 10 통합 검증 + GKE 클러스터 삭제 로그
 
 ---
@@ -437,3 +444,10 @@ gcloud container clusters delete capstone --zone us-central1-a --quiet
 - **2026-05-09 (Day 7)** — **§6 모니터링 4 축 소절 + 메트릭 표 (사용자 승인)**: 3 옵션(4 축 소절 + 메트릭 표 / 목적별 3 소절 / ServiceMonitor 구조 중심) 중 4 축. 결정 근거 — architecture.md §5 메트릭 표(4 축) 와 *1:1 대응* 으로 두 문서 역할 일관성 확보. §6.1 RAG API 4 종 / §6.2 vLLM 6 종 / §6.3 Qdrant 부재 명시 + Day 10 도입 예고 / §6.4 GPU(DCGM) 캡스톤 미적용 + GKE 자동 통합 위임. 본 캡스톤 lab 검증 범위 — RAG API 4 종 + vLLM 6 종 = 10 메트릭. Day 8 Grafana 4 패널 + HPA 2 개의 입력이 본 표.
 - **2026-05-09 (Day 7)** — **release 라벨 매칭 2 단계 ASCII 다이어그램 (lesson.md §4.9.2 + architecture.md §3.12.1)**: Phase 3-02 §1-2 의 자주 하는 실수 1 번이 캡스톤에서도 그대로 유효 — Prometheus CR `serviceMonitorSelector` ↔ ServiceMonitor `metadata.labels.release` ↔ ServiceMonitor `spec.selector` ↔ Service `metadata.labels` 4 단계 매칭을 ASCII 로 시각화. 학습자가 ServiceMonitor 작성 시 가장 자주 빠뜨리는 `release: prom` 한 줄을 자주 하는 실수 #19 로 표면화 + lesson.md §4.9 결정 박스 ② 에서 Helm release name 변경 시 라벨도 함께 변경해야 함을 명시.
 - **2026-05-09 (Day 7)** — **자주 하는 실수 3 건 추가 (Day 7 — ConfigMap/Secret/ServiceMonitor)**: ⑲ ServiceMonitor `release` 라벨 누락 → Targets 빈 상태. 진단 단계 — Prometheus CR serviceMonitorSelector 확인 → ServiceMonitor labels 비교 → 누락 시 매니페스트 수정. ⑳ ConfigMap 변경 후 Pod 재시작 누락 → envFrom 옛값 고정. 해결 단계 — 즉시 `kubectl rollout restart` / 자동화 Day 10 Helm `checksum/config` / 외부 의존성 Reloader 컨트롤러. ㉑ Secret `data` vs `stringData` 혼동 → base64 디코딩 실패. 해결 단계 — 평문은 `stringData` / base64 는 `data` / CLI `kubectl create secret --from-literal` / 검증 `base64 -d`. 총 자주 하는 실수 18 → 21 건. Phase 2-01 §1-1 + Phase 3-02 §1-2 인용으로 학습 누적성.
+- **2026-05-10 (Day 8)** — **vLLM HPA 메트릭으로 `num_requests_running` 단일 채택 (사용자 승인)**: 3 옵션(running / running+waiting / gpu_cache_usage_perc) 중 running 단일. 결정 근거 — Phase 4-3 부하 시연에서 8~16 이 정상 범위로 검증된 직관적 메트릭, 임계 averageValue=8 설정 단순, ML 학습자에게 *continuous batching 의 본질 = 동시 처리 요청 수* 라는 학습 가치. waiting 은 임계 0 이라 noise 민감, gpu_cache_usage_perc 는 정상 운영도 0.95 부근이라 임계 0.97 좁게 설정해야 함. architecture.md §3.13.1 3 옵션 비교 표 + lesson.md §7 결정 박스 ①.
+- **2026-05-10 (Day 8)** — **Grafana 대시보드 import: ConfigMap + sidecar 자동 (사용자 승인)**: 3 옵션(ConfigMap + sidecar / JSON 파일 첨부 / kube-prometheus-stack values dashboards 키) 중 sidecar. 결정 근거 — Phase 3-02 패턴 계승, Day 7 의 prom-grafana 가 sidecar 활성화 상태(values.yaml grafana.sidecar.dashboards.label = grafana_dashboard 확인), Day 10 Helm `templates/monitoring.yaml` 통합 친화. ConfigMap 한 장(`61-grafana-rag-dashboard.yaml`) namespace=`monitoring` + labels.grafana_dashboard="1" 만 정확하면 ~30 초 안에 Grafana UI 자동 등장. lab Step 2 sidecar 로그 확인 명령 포함.
+- **2026-05-10 (Day 8)** — **retriever hit-ratio 패널 → §6.1 4 RAG 메트릭 단계별 분해로 교체 (사용자 승인)**: capstone-plan §7 Day 8 초안의 4 패널(RAG latency / vLLM tokens / GPU 메모리 / retriever hit-ratio) 중 hit-ratio 는 main.py 에 메트릭 부재 → Day 5 코드 변경 부담. 사용자 결정으로 §6.1 의 RAG API 4 메트릭(rag_chat_total / chat_latency / retrieve_latency / llm_latency) 으로 교체. 결과 4 패널: ① chat req/s status별 / ② chat latency p95 단계별 분해(chat·retrieve·llm) / ③ vLLM running·waiting / ④ GPU KV cache gauge. 코드 변경 0, 이미 노출 중인 메트릭만 시각화. lesson.md §6 보강에 결정 명시.
+- **2026-05-10 (Day 8)** — **부하 트리거 — Day 8 짧은 hey 60s c=8, 본격 Day 9 (사용자 승인)**: 3 옵션(Day 8 짧은 부하만 / Day 8 본격 hey + load_test.sh / Day 9 까지 미룸) 중 짧은 부하. 결정 근거 — capstone-plan §7 Day 9 의 부하 테스트 + 튜닝과 *역할 분담*. Day 8 lab Step 6~7 에서 hey 60s c=8 한 번 발사로 REPLICAS 변동을 *체험* 만, p95 측정·튜닝·load_test.sh 스크립트는 Day 9 로. lab 분량 적정선 유지 (~21KB Day 7 lab 와 비슷한 ~24KB).
+- **2026-05-10 (Day 8)** — **maxReplicas=2 의 *체험형 학습 설계* (architecture.md §3.13.4)**: T4 노드 풀 1 대 → vLLM Pod 1 개만 schedule 가능. maxReplicas=1 두면 HPA 가 *사실상 무의미* — 학습자가 "왜 HPA 를 둬야 하는가" 체감 못함. maxReplicas=2 + 노드 1 대 = "스케일 *시도* 는 되지만 노드가 없음" 시나리오로 운영 환경의 *실제 문제* 를 학습 환경에서 안전하게 재현. lab Step 7 에서 `kubectl describe pod vllm-2` 의 `0/2 nodes are available: ... 1 node(s) had untolerated taint {nvidia.com/gpu: present}` 메시지가 학습 포인트. 자주 하는 실수 #24 와 직접 연결.
+- **2026-05-10 (Day 8)** — **prometheus-adapter rules.custom 의 콜론 별칭 처리**: vLLM 메트릭 `vllm:num_requests_running` 의 콜론(`:`) 이 K8s API path (`/apis/.../pods/*/vllm:num_requests_running`) 에 안전하지 않아 일부 client 인코딩 실패. adapter 의 `name.matches: "^vllm:(.*)$"` + `name.as: "vllm_${1}"` 로 별칭 부여 → HPA 25 는 별칭 `vllm_num_requests_running` 만 참조. RAG API 의 `rag_chat_total` 은 *Counter* 라 rate(2m) PromQL 변환 + `_total` → `_requests_per_second` 별칭. 두 규칙의 차이를 자주 하는 실수 #22 (LabelMatchers 누락) + lesson.md §7.3 핵심 발췌 3 + 60-prometheus-adapter-values.yaml 주석으로 명시.
+- **2026-05-10 (Day 8)** — **자주 하는 실수 3 건 추가 (Day 8 — HPA/Grafana/adapter)**: ㉒ prometheus-adapter rules.custom 의 `<<.LabelMatchers>>` template syntax 누락 → adapter Pod Ready 인데 메트릭 미노출. 진단 — adapter 로그 `discovered metrics: 0` 또는 `failed to query`. 해결 — metricsQuery 에 `<<.Series>>` + `<<.LabelMatchers>>` + `<<.GroupBy>>` 세 placeholder 모두 포함. ㉓ HPA `scaleTargetRef.kind: ReplicaSet` 또는 ReplicaSet 이름(`rag-api-7d8f9b6c5`) 사용 → HPA 가 아무 일도 안 함. 해결 — `kind: Deployment` + name 은 Deployment 이름 (해시 suffix 없는 형태). ㉔ vLLM replicas 가 *왜 안 늘어나는가* 오해 → 부하가 RAG API 4 Pod 에 분산되어 vLLM 으로 가는 RPS 가 충분히 분산됨 + maxReplicas=2 + GPU 노드 1 대 = *체험형 학습 설계* 임을 학습자가 인지 못함. 해결 — 의도된 결과로 두거나 hey -c 32 로 부하 집중 또는 노드 풀 size=2 확장. 총 자주 하는 실수 21 → 24 건.

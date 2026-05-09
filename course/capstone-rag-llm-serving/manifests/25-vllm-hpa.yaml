@@ -1,0 +1,70 @@
+# 출처:
+#   ① 골격      → course/phase-3-production/03-autoscaling-hpa/manifests/hpa-custom-metric.yaml
+#                 (Pods 메트릭 + behavior 비대칭 + scaleTargetRef 패턴)
+#   ② 메트릭 출처 → course/capstone-rag-llm-serving/manifests/24-vllm-servicemonitor.yaml
+#                 (Day 7 ServiceMonitor 가 vllm:num_requests_running 수집)
+#   ③ 결정 근거   → docs/architecture.md §3.13.1 (vLLM HPA 메트릭 3 옵션 비교) +
+#                  lesson.md §7 결정 박스 ① (num_requests_running 채택)
+#
+# 캡스톤 Day 8 — vLLM Deployment 의 자동 스케일링.
+# 본 매니페스트는 prometheus-adapter (60-prometheus-adapter-values.yaml) 가 노출하는
+# 커스텀 메트릭 `vllm_num_requests_running` (Pods 타입) 를 HPA 가 직접 소비하는 패턴입니다.
+#
+# 왜 CPU 가 아닌 vllm:num_requests_running 인가:
+#   vLLM 의 continuous batching 은 *Pod 내부에서 동시 요청을 함께 처리* 합니다 (PagedAttention).
+#   CPU 는 GPU 가 떠받쳐 거의 변하지 않고, Memory 도 KV cache 가 모델 가중치 기반이라 단순 임계 무의미.
+#   `num_requests_running` = 현재 GPU 가 동시 처리 중인 요청 수 — continuous batching 의 본질.
+#   Phase 4-3 부하 시연에서 8~16 이 정상, 그 이상이면 KV cache 한계로 waiting 발생.
+#
+# 라벨/이름 — adapter 의 별칭 변환 (vllm:num_requests_running → vllm_num_requests_running):
+#   vLLM 의 메트릭명에 콜론(`:`) 이 들어가면 K8s API path 에 안전하지 않아 일부 client 가 인코딩 실패.
+#   60-prometheus-adapter-values.yaml 의 rules.custom 이 `name.matches: "^vllm:(.*)$"` →
+#   `name.as: "vllm_${1}"` 로 별칭 부여 — HPA 는 별칭만 참조.
+#
+# minReplicas/maxReplicas 결정 근거 (architecture.md §3.13.4):
+#   minReplicas: 1 — 캡스톤은 GPU 노드 1 대만 사용해 vLLM Pod 1 개가 표준.
+#   maxReplicas: 2 — *체험형 학습 설계*. T4 노드 풀 size=1 이라 두 번째 Pod 는 Pending 상태로 멈춤.
+#                    학습자는 `kubectl describe pod vllm-2` 로 운영 환경의 노드 부족 시나리오를 안전하게 재현.
+#                    운영 시 maxReplicas = (GPU 노드 풀 size). Day 9 에 노드 풀 확장 학습.
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vllm                                 # Deployment 이름과 동일하게 — 한 Deployment 에 HPA 1 개 권장
+  namespace: rag-llm
+  labels:
+    app: vllm
+    component: llm-serving
+    autoscaler: requests-running             # Day 8 에 두 HPA(vllm + rag-api) 를 동시 조회 시 식별용
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment                         # ⚠ ReplicaSet 이 아닌 Deployment 지정 (자주 하는 실수 #23)
+    name: vllm                               # 20-vllm-deployment.yaml 의 metadata.name 과 정확히 일치
+  minReplicas: 1                             # 평소 idle 시 1 Pod 유지 — vLLM cold start 5~10 분 회피
+  maxReplicas: 2                             # 학습 포인트 — T4 노드 풀 1 대 환경에서 두 번째는 Pending
+  metrics:
+    - type: Pods                             # Pod 별 평균값 기준 (averageValue) — vLLM 처럼 Pod 단위 부하 측정에 적합
+      pods:
+        metric:
+          # adapter 의 name.as 로 별칭 변환된 이름 — `vllm:num_requests_running` (PromQL) → `vllm_num_requests_running`
+          name: vllm_num_requests_running
+        target:
+          type: AverageValue                 # Pods 타입은 AverageValue 만 가능 (Pod 당 평균)
+          averageValue: "8"                  # Pod 당 평균 8 RPS-running 도달 시 scale-out
+                                             # 8 = continuous batching 의 안전선 (Phase 4-3 검증, 8~16 정상)
+  # behavior — Day 8 의 핵심 학습 — 비대칭 정책 (architecture.md §3.13.3).
+  # scaleUp 즉시 / scaleDown 5 분 — vLLM cold start 가 길어 떨림 방지 우선.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0          # 즉시 — vLLM cold start 30~60 초(PVC hit) 가 길어 *지연 없이* 트리거
+      policies:
+        - type: Percent
+          value: 100                         # 1 분당 최대 100% 증가 (1 → 2). vLLM 은 어차피 maxReplicas=2 라 무관
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300        # 5 분 — 부하 종료 직후 즉시 Pod 회수 시 다음 부하에서 또 cold start
+      policies:
+        - type: Pods
+          value: 1                           # 1 분당 최대 1 Pod 감소
+          periodSeconds: 60

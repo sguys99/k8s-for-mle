@@ -490,6 +490,90 @@ Day 10 Helm 차트 `templates/monitoring.yaml` 에서 vllm/rag-api/qdrant 3 종 
 
 값 중복은 **placeholder 단계에서는 무영향** — 학습자는 본 캡스톤 작업 중 진짜 토큰을 두 Secret 에 입력하지 않습니다. 운영 배포 시 ESO/SealedSecrets 가 자동 주입.
 
+## 3.13 HPA 결정 노트 (Day 8 핵심)
+
+Day 7 의 ServiceMonitor 가 *수집* 한 메트릭을 Day 8 에서 **자동 스케일링의 입력** 으로 사용하면서 결정해야 할 4 가지를 정리합니다. lesson.md §7 의 결정 박스가 *어떻게 동작하는가* 라면, 본 절은 *왜 이 메트릭/임계값/behavior 인가* + *운영 환경에서 어떻게 진화하는가*.
+
+### 3.13.1 vLLM HPA 메트릭 — 3 옵션 비교
+
+| 옵션 | 의미 | 정상값 (T4 + phi-2) | 임계 설정 난이도 | 캡스톤 채택 |
+|---|---|---|---|---|
+| **(A) `vllm:num_requests_running`** ✅ | continuous batching 으로 GPU 가 *동시 처리* 중인 요청 수 | 0 (idle) ~ 8~16 (포화) | **쉬움** — Phase 4-3 부하 시연에서 8~16 이 정상 범위로 검증됨 | Day 8 Pods averageValue=8 |
+| (B) `vllm:num_requests_running` + `vllm:num_requests_waiting` | running 한도 도달 → waiting 증가 → 조기 스케일아웃 | running 0~8 + waiting 0 | 중 — waiting 임계가 0 이라 noise 에 민감 | (미채택 — 단순성 우선) |
+| (C) `vllm:gpu_cache_usage_perc` | KV cache 사용률 (0.0 ~ 1.0) — GPU 메모리 포화도 직접 신호 | 0.0 (idle) ~ 0.95 (정상 운영) | **어려움** — 정상 운영도 0.95 부근이라 임계값을 0.97 정도로 좁게 둬야 함 | (미채택 — 학습 부담) |
+
+**(A) 채택 근거**:
+- continuous batching 의 *본질* 은 *동시 처리 요청 수* — 이 학습 가치는 ML 엔지니어가 vLLM 의 운영 특성을 이해하는 핵심
+- Phase 4-3 lesson.md §1-6 에서 이미 검증한 메트릭 — 학습 누적성
+- waiting 은 *부족 신호* 라 임계값이 0 이라 false positive 가 잦음. 운영에서 waiting > 0 은 *이미 늦은 신호*
+- gpu_cache_usage_perc 는 *항상 높은* 메트릭이라 캡스톤 학습 단계에서는 PromQL 이해 부담만 큼
+
+**(B), (C) 의 운영 가치**: Phase 5 (멀티 클러스터/GitOps) 시점에 (A) 단일 메트릭이 부하 패턴을 못 잡는 케이스가 발견되면 외부 메트릭 (KEDA `external.metrics.k8s.io`) 으로 (B) 또는 (C) 를 추가. 본 캡스톤은 단순성 우선.
+
+### 3.13.2 RAG API HPA — 왜 vLLM 만 스케일하지 않는가
+
+vLLM 만 HPA 두면 *부하 시 RAG API 가 병목* 입니다. 시퀀스 분해:
+
+```
+사용자 부하 ↑ → RAG API replicas 그대로 (CPU 평이) → /chat 큐잉 → 응답 latency ↑
+            → vLLM 으로 트래픽 못 흘려보냄 → vllm:num_requests_running 변동 없음
+            → vLLM HPA 발동 안 함 (잘못된 결론: 부하가 없다)
+```
+
+해결: **RAG API 에도 RPS 기준 HPA**. `rag_chat_total` Counter 를 prometheus-adapter 에서 `rate(...[2m])` 로 변환 → Pods 메트릭 `rag_chat_requests_per_second` 로 노출 → HPA averageValue=10 (Pod 당 평균 10 RPS 도달 시 스케일아웃).
+
+**averageValue=10 산정 근거** (Day 7 측정 기반):
+- Day 7 의 `for i in {1..5}; do curl ...` 으로 raw 1 Pod 처리량 약 12 RPS 측정
+- 80% 안전선으로 10 RPS — Pod 당 평균이 10 도달 시 Pod 추가
+- replicas=2 → 4 → 6 점진 증가 (maxReplicas=6 으로 상한)
+- Day 9 부하 테스트로 실제 처리량 정밀 측정 후 averageValue 재조정 가능
+
+### 3.13.3 behavior 의 비대칭 — scaleUp 0s, scaleDown 300s
+
+```yaml
+behavior:
+  scaleUp:
+    stabilizationWindowSeconds: 0          # 즉시 — cold start 보호
+    policies: [{ type: Percent, value: 100, periodSeconds: 60 }]   # 1 분당 최대 100% 증가
+  scaleDown:
+    stabilizationWindowSeconds: 300        # 5 분 — 떨림 방지
+```
+
+**scaleUp 즉시 채택 근거**:
+- RAG API cold start: lifespan 에서 e5-small 130MB 다운로드 + 1 회 로드 → 첫 ready 까지 20~30 초
+- vLLM cold start: PVC 캐시 hit 시 30~60 초, miss 시 5~10 분 (Day 4 §3.8.2)
+- 부하 도달 시점에 *이미 늦은* Pod 가 추가되므로 stabilization 없이 즉시 트리거
+- 1 분당 100% 증가 정책: replicas 2 → 4 → 8 의 doubling. RPS 가 빠르게 늘어나는 시나리오 대응
+
+**scaleDown 300s 채택 근거**:
+- hey 60s 부하 종료 직후 *즉시* Pod 가 사라지면 부하 재시작 시 또 cold start
+- 5 분 stabilization 으로 *부하 패턴이 짧으면 Pod 유지* — 학습자가 직관적으로 체험
+- 운영 환경: 트래픽이 burst 패턴 (15 분 간격 5 분 부하) 일 때 scaleDown 5 분이면 Pod 유지율 100%
+- 비용 vs 가용성 트레이드오프: 5 분 = T4 노드 \$0.029, RAG API e2-medium 노드 \$0.011
+
+### 3.13.4 T4 노드 풀 maxReplicas=2 제약의 운영적 의미
+
+본 캡스톤 GPU 환경 (Day 4 결정): T4 노드 풀 1 노드 — vLLM Pod 1 개만 schedule 가능. HPA `25-vllm-hpa.yaml` 의 maxReplicas=2 로 두면 두 번째 Pod 가 *Pending 상태로 멈춤* — **이것이 학습 포인트** 입니다.
+
+```bash
+$ kubectl describe pod vllm-2 -n rag-llm
+Events:
+  Warning  FailedScheduling  ...  0/2 nodes are available:
+                                  1 node(s) didn't match Pod's node affinity/selector,
+                                  1 node(s) had untolerated taint {nvidia.com/gpu: present}.
+```
+
+**왜 maxReplicas=1 로 두지 않는가**:
+- maxReplicas=1 이면 *HPA 가 사실상 무의미* — 학습자가 "왜 HPA 를 둬야 하는가" 를 체감 못함
+- maxReplicas=2 + 노드 1 대 = "스케일 *시도* 는 되지만 노드가 없음" 시나리오 → 운영 환경의 *실제 문제* 를 학습 환경에서 안전하게 재현
+
+**운영 환경 권장**:
+- GPU 노드 풀 size = `minReplicas + 1` 이상 (HPA 가 즉시 schedule 가능한 여유분)
+- Day 9 부하 테스트 + 튜닝 시 노드 풀 size 확장 (`gcloud container node-pools resize gpu-pool --num-nodes=2 --cluster capstone`)
+- 또는 GKE Cluster Autoscaler 활성화 — 노드 풀 자체를 부하에 따라 자동 확장 (Phase 5 멀티 클러스터 학습)
+
+본 캡스톤의 maxReplicas=2 는 *체험형 학습 설계* 이며, 자주 하는 실수 #24 ("vLLM replicas 가 안 늘어남") 와 직접 연결됩니다.
+
 ---
 
 ## 4. PVC 5Gi 산정 근거
@@ -516,22 +600,29 @@ Day 10 Helm 차트 `templates/monitoring.yaml` 에서 vllm/rag-api/qdrant 3 종 
 
 Day 7 의 ServiceMonitor 24/34 가 *실제로 수집 중인* 메트릭 라벨로 갱신했습니다. lesson.md §6 의 4 축 본문을 참고하면서, 본 표는 Day 8~9 에서 *어떤 메트릭이 어떻게 활용되는가* 의 빠른 참조용.
 
+> 마킹 범례 — **◉ Day 8 HPA 입력** / **★ Day 8 Grafana 대시보드 패널** / (Day 9) Day 9 부하 테스트·튜닝 활용
+
 | 축 | 메트릭명 (실측) | 타입 | 출처 (ServiceMonitor) | Day 8/9 활용 |
 |---|---|---|---|---|
-| RAG API | `rag_chat_total{status}` | Counter | 34-rag-api-servicemonitor | `rate(...[1m])` → HPA RPS 입력 (Day 8) |
-| RAG API | `rag_chat_latency_seconds` | Histogram | 동일 | p95/p99 → Grafana SLO (Day 8) |
-| RAG API | `rag_retrieve_latency_seconds` | Histogram | 동일 | 병목 분리 — retriever vs vLLM (Day 9) |
-| RAG API | `rag_llm_latency_seconds` | Histogram | 동일 | 병목 분리 (Day 9) |
-| vLLM | `vllm:num_requests_running` | Gauge | 24-vllm-servicemonitor | **HPA 1 순위** (Day 8 prometheus-adapter) |
-| vLLM | `vllm:num_requests_waiting` | Gauge | 동일 | KV cache 한계 신호 (Day 9) |
-| vLLM | `vllm:gpu_cache_usage_perc` | Gauge | 동일 | max-model-len 튜닝 신호 (Day 9) |
+| RAG API | `rag_chat_total{status}` | Counter | 34-rag-api-servicemonitor | ◉ **HPA 입력** (35-rag-api-hpa, rate 변환) + ★ Grafana 패널 ① |
+| RAG API | `rag_chat_latency_seconds` | Histogram | 동일 | ★ Grafana 패널 ② (chat 라인) |
+| RAG API | `rag_retrieve_latency_seconds` | Histogram | 동일 | ★ Grafana 패널 ② (retrieve 라인) — 병목 분리 (Day 9) |
+| RAG API | `rag_llm_latency_seconds` | Histogram | 동일 | ★ Grafana 패널 ② (llm 라인) — 병목 분리 (Day 9) |
+| vLLM | `vllm:num_requests_running` | Gauge | 24-vllm-servicemonitor | ◉ **HPA 1 순위** (25-vllm-hpa, adapter 별칭) + ★ Grafana 패널 ③ |
+| vLLM | `vllm:num_requests_waiting` | Gauge | 동일 | ★ Grafana 패널 ③ (waiting 라인) — KV cache 한계 신호 (Day 9) |
+| vLLM | `vllm:gpu_cache_usage_perc` | Gauge | 동일 | ★ Grafana 패널 ④ — max-model-len 튜닝 신호 (Day 9) |
 | vLLM | `vllm:time_to_first_token_seconds` | Histogram | 동일 | TTFT — 스트리밍(§11) 핵심 |
 | vLLM | `vllm:e2e_request_latency_seconds` | Histogram | 동일 | 네트워크 오버헤드 추적 |
 | vLLM | `vllm:generation_tokens_total` | Counter | 동일 | 토큰/sec — 비용 추적 |
 | Qdrant | `qdrant_collections_total`, `qdrant_search_total` | Gauge / Counter | (Day 7 미적용) | Day 10 Helm 통합 |
 | GPU | `DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_DEV_FB_USED` | Gauge | NVIDIA DCGM exporter (캡스톤 미적용 — GKE 자동 통합 사용) | 관측용 |
 
-**본 캡스톤 lab 검증 범위**: RAG API 4 종 + vLLM 6 종 = 10 메트릭. Qdrant 는 부록(architecture.md §3.12.3 결정 노트), GPU 는 GKE Cloud Monitoring 자동 통합으로 위임. Day 8 Grafana 대시보드 4 패널 + HPA 2 개의 입력이 본 표의 메트릭들입니다.
+**본 캡스톤 lab 검증 범위**: RAG API 4 종 + vLLM 6 종 = 10 메트릭. Qdrant 는 부록(§3.12.3 결정 노트), GPU 는 GKE Cloud Monitoring 자동 통합으로 위임.
+
+**Day 8 활용 — 10 메트릭 중 6 개 (HPA 2 + Grafana 4 패널)**:
+- HPA 입력 ◉ 2 종 — `rag_chat_total` (35), `vllm:num_requests_running` (25). 두 메트릭은 Day 7 ServiceMonitor 가 그대로 수집한 것을 prometheus-adapter 가 K8s API 로 변환만.
+- Grafana 패널 ★ 6 시계열 (4 패널) — RAG API 4 종 (chat/retrieve/llm 3 latency + chat_total rate) + vLLM 3 종 (running/waiting Gauge + gpu_cache_usage_perc).
+- 미사용 4 종 (`vllm:time_to_first_token_seconds`, `vllm:e2e_request_latency_seconds`, `vllm:generation_tokens_total`, RAG API histogram bucket 의 p50/p99) — Day 9 부하 테스트 + 튜닝에서 활용.
 
 ---
 
@@ -561,8 +652,9 @@ Day 7 의 ServiceMonitor 24/34 가 *실제로 수집 중인* 메트릭 라벨로
 | Day 5 ✅ | §1 시퀀스 다이어그램 정정 + §3.9·§3.10 신규 + §5 메트릭 라벨 갱신 | §1 단계 (1)~(4) 가 retriever/prompts/llm_client 모듈 호출과 1:1 매핑 / §3.9 동기 호출 채택 근거(CPU bound, OpenAI SDK 동기, streaming 미도입, 운영 한계) / §3.10 임베딩 모델 로딩 3 옵션 비교(module/lifespan/Depends) + lifespan 채택 근거 + 메모리 footprint 가정 / §5 RAG API 메트릭 4 종 라벨 |
 | Day 6 ✅ | §3.11 Ingress 라우팅 결정 노트 신규 | §3.11.1 GCE Ingress vs nginx-ingress vs LoadBalancer Service 3 옵션 비교, §3.11.2 nip.io host 채택 근거, §3.11.3 timeout 조정을 Day 8 BackendConfig 로 미루는 결정, §3.11.4 Phase 5 GitOps 와의 호환 (Cloud Armor / CDN / IAP) |
 | Day 7 ✅ | §3.12 모니터링 결정 노트 신규 + §5 메트릭 표 실측값 갱신 + 부록 A Day 7 항목 | §3.12.1 release 라벨 매칭 2 단계 (Prometheus CR ↔ ServiceMonitor ↔ Service), §3.12.2 ConfigMap 변경 시 재시작 4 옵션 비교(수동/checksum/Reloader/파일 마운트), §3.12.3 Qdrant ServiceMonitor 처리 4 옵션 비교(부록·정식·Day 8·미적용), §3.12.4 RBAC 분리의 Phase 5 GitOps + ESO 운영 가치 |
-| Day 8 | §5 + HPA 결정 노트 | 왜 CPU 가 아닌 `vllm:num_requests_running` 인가 |
-| Day 10 | §6 트레이드오프 보강 | 부하 테스트 결과 + Helm 차트 구조 결정 노트 |
+| Day 8 ✅ | §3.13 HPA 결정 노트 신규 + §5 메트릭 표 ◉/★ 마킹 + 부록 A Day 8 항목 | §3.13.1 vLLM HPA 메트릭 3 옵션 비교(running/+waiting/gpu_cache_usage), §3.13.2 RAG API HPA 가 왜 필요한가 + averageValue=10 산정 근거, §3.13.3 behavior 비대칭(scaleUp 0s, scaleDown 300s) cold start 보호 + 떨림 방지, §3.13.4 T4 노드 풀 maxReplicas=2 의 *체험형 학습 설계* (Pending Pod 정상 동작) |
+| Day 9 | §6 트레이드오프 보강 | 부하 테스트 결과 + `--gpu-memory-utilization` 튜닝 1 회전 |
+| Day 10 | §6 + Helm 차트 구조 결정 노트 | 한 줄 배포 + ConfigMap checksum 자동화 + Qdrant ServiceMonitor 정식 도입 |
 
 ---
 
@@ -602,6 +694,13 @@ Day 1~3 에 이 문서가 다루는 매니페스트는 다음과 같습니다.
 - [`../manifests/24-vllm-servicemonitor.yaml`](../manifests/24-vllm-servicemonitor.yaml) — vLLM ServiceMonitor (Phase 4-3 vllm-servicemonitor.yaml 이식 5 변경점 — name `vllm-phi2` → `vllm`, namespace 추가, selector `app=vllm`, release 라벨 `prom`, 캡스톤 컨벤션 라벨)
 - [`../manifests/34-rag-api-servicemonitor.yaml`](../manifests/34-rag-api-servicemonitor.yaml) — RAG API ServiceMonitor (selector `app=rag-api`, endpoints `port: http` interval 30s, release 라벨 `prom` 으로 Prometheus CR 매칭, replicas=2 → endpoints 2 개 자동 발견)
 
+**Day 8**
+
+- [`../manifests/25-vllm-hpa.yaml`](../manifests/25-vllm-hpa.yaml) — vLLM HPA (autoscaling/v2, scaleTargetRef Deployment/vllm, Pods 메트릭 `vllm_num_requests_running` averageValue=8, minReplicas=1 / maxReplicas=2, behavior scaleUp 0s + scaleDown 300s)
+- [`../manifests/35-rag-api-hpa.yaml`](../manifests/35-rag-api-hpa.yaml) — RAG API HPA (autoscaling/v2, scaleTargetRef Deployment/rag-api, Pods 메트릭 `rag_chat_requests_per_second` averageValue=10, minReplicas=2 / maxReplicas=6, behavior 동일)
+- [`../manifests/60-prometheus-adapter-values.yaml`](../manifests/60-prometheus-adapter-values.yaml) — prometheus-adapter Helm values (rules.custom 2 규칙 — RAG `_total` → `_requests_per_second` rate 변환, vLLM `vllm:` → `vllm_` 콜론 별칭. Prometheus URL = `prom-kube-prometheus-stack-prometheus.monitoring.svc:9090`)
+- [`../manifests/61-grafana-rag-dashboard.yaml`](../manifests/61-grafana-rag-dashboard.yaml) — Grafana 대시보드 ConfigMap (namespace=`monitoring`, `grafana_dashboard: "1"` 라벨로 sidecar 자동 import, 4 패널 — chat req/s status별, latency p95 단계별 분해 chat/retrieve/llm, vLLM running vs waiting, GPU KV cache 사용률 gauge)
+
 **Day 5** (코드 모듈 — Day 6 에서 매니페스트 30~33 으로 패키징됩니다)
 
 - [`../practice/rag_app/main.py`](../practice/rag_app/main.py) — FastAPI 진입점, lifespan + app.state 캐싱, `/chat` `/healthz` `/ready` `/metrics`, Pydantic 스키마(ChatRequest/ChatResponse/Source), Prometheus 메트릭 4 종
@@ -623,3 +722,7 @@ Day 1~3 에 이 문서가 다루는 매니페스트는 다음과 같습니다.
 - `.claude/skills/k8s-ml-course-author/assets/templates/practice/Dockerfile.tmpl` (port 8000 → 8001, fastapi_app:app → main:app)
 - `course/phase-4-ml-on-k8s/03-vllm-llm-serving/lesson.md` 라인 151-168 (OpenAI Python SDK 호출 패턴 — `VLLMClient.chat()` 의 원형)
 - `course/phase-4-ml-on-k8s/03-vllm-llm-serving/manifests/{vllm-phi2-deployment, vllm-pvc, vllm-service, vllm-hf-secret}.yaml` (Day 4 — 6 가지 변경: namespace `rag-llm`, labels 캡스톤 컨벤션, 이름 `vllm-phi2` → `vllm`, PVC `vllm-phi2-cache` → `vllm-model-cache`, args 에 `--served-model-name=microsoft/phi-2` 추가, ServiceMonitor/HPA 라벨 제거)
+- `course/phase-3-production/03-autoscaling-hpa/manifests/hpa-custom-metric.yaml` (Day 8 — HPA Pods 메트릭 패턴 + behavior 비대칭 골격. 캡스톤 변경점: 메트릭명 `predict_requests_per_second` → `vllm_num_requests_running` / `rag_chat_requests_per_second`, scaleTargetRef 이름, namespace `prod` → `rag-llm`)
+- `course/phase-3-production/03-autoscaling-hpa/manifests/prometheus-adapter/values.yaml` (Day 8 — rules.custom 의 4 단계 흐름(seriesQuery / resources.overrides / name / metricsQuery) 그대로 계승. 캡스톤 변경점: 규칙 1 추가(`vllm:` 콜론 별칭 처리), Prometheus URL = `prom-kube-prometheus-stack-prometheus.monitoring.svc:9090` 그대로)
+- `course/phase-3-production/02-prometheus-grafana/manifests/grafana-dashboards/sentiment-api-dashboard.json` (Day 8 — JSON 구조(__inputs/__requires/templating/panels) 골격 계승. 캡스톤 변경점: title `Sentiment API` → `RAG-LLM Capstone`, 4 패널 PromQL 을 RAG/vLLM 메트릭으로 교체, gauge 패널 추가)
+- `course/phase-3-production/02-prometheus-grafana/manifests/kube-prometheus-stack/values.yaml` (Day 7 에서 그대로 사용 — Day 8 sidecar 라벨 매칭 `grafana_dashboard: "1"` 의 동작 근거)

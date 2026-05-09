@@ -1,0 +1,71 @@
+# 출처:
+#   ① 골격      → course/phase-3-production/03-autoscaling-hpa/manifests/hpa-custom-metric.yaml
+#                 (`predict_requests_per_second` Pods 메트릭 패턴 — Counter rate 변환)
+#   ② 형제 패턴   → course/capstone-rag-llm-serving/manifests/25-vllm-hpa.yaml
+#                 (캡스톤 컨벤션 — labels {app, component, autoscaler}, behavior 동일)
+#   ③ 메트릭 출처 → course/capstone-rag-llm-serving/manifests/34-rag-api-servicemonitor.yaml
+#                 (Day 7 ServiceMonitor 가 rag_chat_total Counter 수집)
+#   ④ 결정 근거   → docs/architecture.md §3.13.2 (왜 RAG API 도 HPA 가 필요한가) +
+#                  lesson.md §7 결정 박스 ② (Counter rate 변환)
+#
+# 캡스톤 Day 8 — RAG API Deployment 의 자동 스케일링.
+# vLLM 만 HPA 두면 부하 시 RAG API 가 병목 — `/chat` 큐잉으로 vLLM 까지 트래픽이 도달 못함.
+# 본 매니페스트는 prometheus-adapter (60) 가 변환한 `rag_chat_requests_per_second` (Pods 타입) 를 소비.
+#
+# Counter → rate 변환 (adapter rules.custom 의 첫 번째 규칙):
+#   원본 메트릭   : rag_chat_total{status="ok"} = 누적 호출 수 (단조 증가, Counter)
+#   PromQL 변환   : sum(rate(rag_chat_total{namespace!="",pod!=""}[2m])) by (namespace, pod)
+#   API 노출 이름 : rag_chat_requests_per_second (name.matches: "^(.*)_total$" → as: "${1}_per_second")
+#   HPA 입력      : Pod 당 평균 RPS — averageValue=10 도달 시 Pod 추가
+#
+# averageValue=10 산정 근거 (architecture.md §3.13.2):
+#   Day 7 의 `for i in {1..5}; do curl ...; sleep 2; done` 으로 1 Pod 처리량 약 12 RPS 측정.
+#   80% 안전선으로 10 RPS — Pod 당 평균이 10 도달 시 Pod 추가.
+#   minReplicas=2 → maxReplicas=6 점진 증가 (Day 9 부하 테스트로 정밀 조정).
+#
+# minReplicas/maxReplicas 결정:
+#   minReplicas: 2 — Day 6 의 RollingUpdate maxUnavailable=0 정책과 일관 (다운타임 0 보장).
+#   maxReplicas: 6 — e2-medium 노드 1 대(4GB) 에서 RAG API Pod (2Gi) 가 6 개 = 12GB → 노드 1 대로는 부족.
+#                    실제로는 노드 풀 size 가 한계 → cluster-autoscaler 또는 Day 10 노드 추가로 해결.
+#                    학습 단계에서는 maxReplicas=6 으로 두고 *몇 개까지 schedule 되는지* 관측.
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rag-api                              # Deployment 이름과 동일하게 — 한 Deployment 에 HPA 1 개 권장
+  namespace: rag-llm
+  labels:
+    app: rag-api
+    component: rag-api
+    autoscaler: rps                          # vllm HPA 와 라벨로 구분 (`kubectl get hpa -l autoscaler=rps`)
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment                         # ⚠ ReplicaSet 이 아닌 Deployment 지정 (자주 하는 실수 #23)
+    name: rag-api                            # 30-rag-api-deployment.yaml 의 metadata.name 과 정확히 일치
+  minReplicas: 2                             # Day 6 의 RollingUpdate maxUnavailable=0 정책과 일관
+  maxReplicas: 6                             # e2-medium 노드 1 대로는 schedule 한계 — Day 10 에 노드 풀 확장 안내
+  metrics:
+    - type: Pods                             # Pods 메트릭은 averageValue 만 — Pod 당 평균
+      pods:
+        metric:
+          # adapter 의 name.as 변환 — `rag_chat_total` → `rag_chat_requests_per_second`
+          name: rag_chat_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "10"                 # Pod 당 평균 10 RPS 도달 시 scale-out (Day 7 측정 12 RPS 의 80%)
+  # behavior — vllm HPA 와 동일한 비대칭 정책. 두 HPA 가 같은 클러스터에서 동작할 때
+  # 정책이 다르면 진단이 어려워지므로 일관 유지 (architecture.md §3.13.3).
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0          # 즉시 — RAG API cold start 20~30 초 (e5 모델 130MB 로드)
+      policies:
+        - type: Percent
+          value: 100                         # 1 분당 최대 100% 증가 (2 → 4 → 8 doubling)
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300        # 5 분 — 부하 패턴 짧으면 Pod 유지 (떨림 방지)
+      policies:
+        - type: Pods
+          value: 1                           # 1 분당 최대 1 Pod 감소 — 점진적 회수
+          periodSeconds: 60
