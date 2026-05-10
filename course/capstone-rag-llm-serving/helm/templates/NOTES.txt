@@ -1,0 +1,142 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎉 Capstone RAG-LLM 차트 설치가 시작되었습니다.
+   release: {{ .Release.Name }} / namespace: {{ .Values.namespace }}
+   chart: {{ .Chart.Name }}-{{ .Chart.Version }} / appVersion: {{ .Chart.AppVersion }}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📦 활성 컴포넌트
+{{- if .Values.qdrant.enabled }}
+   ✅ Qdrant         (StatefulSet replicas={{ .Values.qdrant.replicas }}, PVC {{ .Values.qdrant.persistence.size }})
+{{- end }}
+{{- if .Values.vllm.enabled }}
+   ✅ vLLM           (Deployment, GPU={{ .Values.vllm.gpu.enabled }}, model={{ .Values.vllm.modelName }}, PVC {{ .Values.vllm.persistence.size }})
+{{- if .Values.vllm.hpa.enabled }}
+                       HPA: {{ .Values.vllm.hpa.minReplicas }}-{{ .Values.vllm.hpa.maxReplicas }} replicas, metric={{ .Values.vllm.hpa.metricName }}
+{{- end }}
+{{- else }}
+   ⛔ vLLM 비활성     (values-dev.yaml — RAG API /chat 호출은 503 not_ready, 의도된 dev 결과)
+{{- end }}
+{{- if .Values.ragApi.enabled }}
+   ✅ RAG API        (Deployment replicas={{ .Values.ragApi.replicas }}, image={{ .Values.ragApi.image.repository }}:{{ .Values.ragApi.image.tag }})
+{{- if .Values.ragApi.hpa.enabled }}
+                       HPA: {{ .Values.ragApi.hpa.minReplicas }}-{{ .Values.ragApi.hpa.maxReplicas }} replicas, metric={{ .Values.ragApi.hpa.metricName }}
+{{- end }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+   ✅ Ingress        ({{ .Values.ingress.className }}, host={{ .Values.ingress.host }})
+{{- else }}
+   ⛔ Ingress 비활성   (`kubectl port-forward -n {{ .Values.namespace }} svc/rag-api 8001:8001` 로 검증)
+{{- end }}
+{{- if .Values.indexing.enabled }}
+   ✅ Indexing RBAC  (ServiceAccount={{ .Values.indexing.serviceAccountName }})
+{{- if .Values.indexing.cron.enabled }}
+                       CronWorkflow: schedule="{{ .Values.indexing.cron.schedule }}" timezone={{ .Values.indexing.cron.timezone }}
+{{- end }}
+{{- end }}
+{{- if .Values.monitoring.grafanaDashboard.enabled }}
+   ✅ Grafana CM     (namespace={{ .Values.monitoring.grafanaDashboard.namespace }} — sidecar 가 ~30 초 안에 자동 import)
+{{- end }}
+{{- if .Values.monitoring.prometheusAdapter.enabled }}
+   ✅ Adapter values (별도 helm install 입력 — 아래 §5 안내)
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 다음 단계
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+§1. Pod Ready 대기 (~6~8 분 — vLLM cold start 가 가장 길음)
+
+  kubectl get pods -n {{ .Values.namespace }} -w
+  # vLLM startupProbe 60×10s = 최대 10 분. 첫 install 시 모델 5GB 다운로드 포함.
+  # 두 번째 기동(PVC 캐시 hit) 은 30 초 안에 ready.
+
+§2. Service / Endpoint 확인
+
+  kubectl get svc -n {{ .Values.namespace }}
+  # qdrant (Headless 6333/6334), vllm (ClusterIP 8000), rag-api (ClusterIP 8001)
+
+{{- if .Values.ingress.enabled }}
+
+§3. Ingress IP 확인 + host 갱신 (LoadBalancer 프로비저닝 ~3~5 분)
+
+  EXTERNAL_IP=$(kubectl get ing rag-api -n {{ .Values.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo "External IP: $EXTERNAL_IP"
+  helm upgrade {{ .Release.Name }} . -n {{ .Values.namespace }} \
+    -f values-prod.yaml --set ingress.host=$EXTERNAL_IP.nip.io
+
+§4. RAG API end-to-end 검증 (1 줄 완료 기준)
+
+  curl http://$EXTERNAL_IP.nip.io/chat \
+    -H 'Content-Type: application/json' \
+    -d '{"messages":[{"role":"user","content":"K8s에서 GPU 어떻게 잡지?"}],"top_k":3}' | jq
+
+  # 기대: 200 OK + answer 텍스트 + sources 3 개 (인용 마커 [1], [2], [3] 포함)
+{{- else }}
+
+§3. RAG API end-to-end 검증 (port-forward, 1 줄 완료 기준)
+
+  kubectl port-forward -n {{ .Values.namespace }} svc/rag-api 8001:8001 &
+  curl http://localhost:8001/chat \
+    -H 'Content-Type: application/json' \
+    -d '{"messages":[{"role":"user","content":"K8s에서 GPU 어떻게 잡지?"}],"top_k":3}' | jq
+{{- end }}
+
+{{- if .Values.monitoring.prometheusAdapter.enabled }}
+
+§5. prometheus-adapter 별도 설치 (HPA 커스텀 메트릭)
+
+  본 차트는 adapter values 만 ConfigMap 으로 동봉합니다. 학습자가 별도 helm install:
+
+  kubectl get cm prometheus-adapter-values -n {{ .Values.namespace }} \
+    -o jsonpath='{.data.values\.yaml}' > /tmp/adapter-values.yaml
+  helm install prometheus-adapter prometheus-community/prometheus-adapter \
+    -n monitoring -f /tmp/adapter-values.yaml --version 4.10.0 --wait
+
+  # 검증: kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1" | jq | grep vllm_num_requests_running
+{{- end }}
+
+{{- if .Values.indexing.enabled }}
+
+§6. 인덱싱 1 회 실행 (수동)
+
+  본 차트는 RBAC + CronWorkflow 만 설치하고, *Workflow 일회성 인스턴스* 는 학습자 명시 실행 (비용 통제):
+
+  argo submit -n {{ .Values.namespace }} --serviceaccount {{ .Values.indexing.serviceAccountName }} \
+    --from cronwf/rag-indexing-daily
+
+  # 또는 raw 매니페스트 사용:
+  argo submit -n {{ .Values.namespace }} \
+    course/capstone-rag-llm-serving/manifests/50-indexing-workflow.yaml
+
+  # 5 step (git-clone → load-docs → chunk → embed → upsert) 자동 진행 ~3~5 분
+{{- end }}
+
+{{- if and .Values.vllm.enabled .Values.vllm.gpu.enabled }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 GKE 비용 경고
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+   T4 GPU 노드  : 시간당 약 $0.35
+   GCE Ingress : 시간당 약 $0.025
+   합산        : 일 약 $8~10 누적
+
+   작업 종료 후 반드시:
+     helm uninstall {{ .Release.Name }} -n {{ .Values.namespace }}
+     kubectl delete namespace {{ .Values.namespace }}
+     gcloud container clusters delete capstone --zone us-central1-a --quiet
+
+   잔여 자원 점검 (External IP / Disks / LoadBalancer):
+     gcloud compute addresses list
+     gcloud compute disks list
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{- end }}
+
+📚 문서 / 검증 시나리오
+   - lesson.md §8 Helm 으로 한 줄 배포
+   - lesson.md §9 검증 시나리오 6 단계
+   - labs/day-10-helm-integration-cleanup.md
+   - docs/architecture.md §3.15 Helm 통합 결정 노트
+
+✅ 학습 목표 6 (Helm 차트 한 줄 배포·롤백) 진입 완료.

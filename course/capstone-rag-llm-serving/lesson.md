@@ -1735,19 +1735,163 @@ watch -n 5 kubectl get hpa,pods -n rag-llm
 
 ## 8. Helm 으로 한 줄 배포
 
-<!-- TBD: Day 10 에서 작성합니다. values 분리(dev/prod), helm install --create-namespace. -->
+Day 1~9 의 21 매니페스트 + 인덱싱 코드 + RAG API 코드 + 부하 테스트 자산을 *한 줄 명령*으로 배포·롤백·정리할 수 있게 만드는 마지막 단계입니다. 본 절은 *왜 Helm 인가* 보다 *우리 캡스톤에 맞춘 차트 구조와 결정* 에 집중합니다 — Helm 자체의 학습 누적은 [Phase 3-01 Helm 차트](../phase-3-production/01-helm-chart/lesson.md) 에서 끝났습니다.
+
+### 8.1 차트 구조 (`helm/`)
+
+| 파일 | 역할 | raw 매니페스트 매핑 | 줄 수 |
+|------|------|---------------------|------|
+| `Chart.yaml` | 메타데이터 (name=capstone-rag-llm, version 0.1.0, appVersion 1.0.0) | — | 46 |
+| `values.yaml` | 기본값 (7 컴포넌트 키 — namespace/qdrant/vllm/ragApi/ingress/monitoring/indexing) | — | 216 |
+| `values-dev.yaml` | dev override (vllm.enabled=false + HPA off + Ingress off) | — | 53 |
+| `values-prod.yaml` | prod override (GPU on + HPA on + Ingress on + Day 9 튜닝 0.90) | — | 69 |
+| `templates/_helpers.tpl` | 5 named templates — name / fullname / chart / commonLabels / componentLabels | — | 105 |
+| `templates/namespace.yaml` | Namespace 1 종 | 00 | 24 |
+| `templates/qdrant.yaml` | StatefulSet + Headless Service | 10 + 11 | 87 |
+| `templates/vllm.yaml` | Deployment + PVC + Service + Secret + ServiceMonitor + HPA | 20 + 21 + 22 + 23 + 24 + 25 | 245 |
+| `templates/rag-api.yaml` | Deployment(+checksum/config) + Service + ConfigMap + Secret + ServiceMonitor + HPA | 30 + 31 + 32 + 33 + 34 + 35 | 226 |
+| `templates/ingress.yaml` | GCE Ingress (host required 검증) | 40 | 46 |
+| `templates/monitoring.yaml` | adapter values ConfigMap + Grafana dashboard ConfigMap | 60 + 61 | 69 |
+| `templates/indexing.yaml` | Argo RBAC + CronWorkflow (Workflow 는 학습자 수동 submit) | 49 + 51 | 224 |
+| `templates/NOTES.txt` | install 후 안내 (Pod Ready / Ingress IP / 비용 경고) | — | 142 |
+| `dashboards/rag-llm.json` | Grafana 4 패널 JSON (`{{ .Files.Get }}` 로 monitoring.yaml 가 로드) | 61 발췌 | 193 |
+| `files/prometheus-adapter-values.yaml` | adapter values 본문 (별도 helm install 입력) | 60 발췌 | 73 |
+
+총 **15 파일 약 1818 줄** — Phase 3-01 sentiment-api 차트(약 800 줄) 의 2 배 분량은 *6 컴포넌트 통합* 의 자연스러운 결과입니다.
+
+### 8.2 values 우선순위 4 단계 (Phase 3-01 §1-3 인용)
+
+```
+values.yaml (가장 낮음)  <  -f values-<env>.yaml  <  --set  <  --set-file
+```
+
+캡스톤 환경 분리 (Phase 3-01 패턴 계승):
+
+| 컴포넌트 | values.yaml (기본) | values-dev.yaml | values-prod.yaml |
+|----------|---------------------|-----------------|------------------|
+| `vllm.enabled` | true | **false** | true |
+| `vllm.gpuMemoryUtilization` | 0.85 | (무관) | **0.90** (Day 9 튜닝 결과) |
+| `vllm.hpa.enabled` | false | false | **true** (min=1, max=2) |
+| `vllm.serviceMonitor.enabled` | false | false | **true** |
+| `ragApi.replicas` | 2 | **1** | 2 |
+| `ragApi.hpa.enabled` | false | false | **true** (min=2, max=6) |
+| `ragApi.serviceMonitor.enabled` | false | false | **true** |
+| `ingress.enabled` | false | false | **true** |
+| `monitoring.*.enabled` | false | false | **true** (2 종) |
+| `indexing.cron.enabled` | true | true | true |
+
+### 8.3 한 줄 install 명령 + 예상 출력
+
+```bash
+helm install rag-llm helm/ -n rag-llm --create-namespace \
+  -f helm/values-prod.yaml \
+  --set ragApi.image.repository=docker.io/<user>/rag-api \
+  --set indexing.imageRepository=docker.io/<user>/rag-indexer \
+  --set indexing.gitRepo=https://github.com/<user>/k8s-for-mle.git \
+  --set ingress.host="placeholder.nip.io"            # Step 5 에서 진짜 IP 로 helm upgrade
+```
+
+```
+NAME: rag-llm
+LAST DEPLOYED: Sat May 10 16:45:00 2026
+NAMESPACE: rag-llm
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎉 Capstone RAG-LLM 차트 설치가 시작되었습니다.
+   release: rag-llm / namespace: rag-llm
+   chart: capstone-rag-llm-0.1.0 / appVersion: 1.0.0
+...
+```
+
+이후 `kubectl get pods -n rag-llm -w` 로 약 6~8 분 기다리면 6 종 Pod (qdrant-0 / vllm / rag-api×2 / + 모니터링 sidecar) 모두 Ready.
+
+### 8.4 결정 박스 — 캡스톤 Helm 차트의 4 핵심 결정
+
+| # | 결정 | 대안 | 채택 근거 |
+|---|------|------|----------|
+| ① | **컴포넌트별 7 templates** (vllm 6 매니페스트를 한 파일에) | 리소스별 14 templates (deployment.yaml / service.yaml ...) | vLLM·RAG API 가 *1 컴포넌트 = 6 매니페스트* 라 컴포넌트 응집도 우선. `{{- if .Values.vllm.enabled }}` 한 줄로 vLLM 전체 끄기 가능. capstone-plan §4.3 명세와 일치. |
+| ② | **values-dev = vllm.enabled=false** (CPU fallback 본 구현 X) | dev 도 vLLM CPU 모드 / HuggingFace TGI 변경 / 미니 모델(distilbert) 대체 | CPU 모드 vLLM 는 inference 가 분 단위라 학습 가치 0. dev 의 의도는 *Helm 흐름만* (install/upgrade/rollback 사이클) 학습. RAG API /chat 503 not_ready 가 *의도된 dev 결과* — Day 7 envFrom 학습 가치 dev 에서 살림. |
+| ③ | **`checksum/config` annotation 으로 ConfigMap 자동 rollout** (Day 7 결정 박스 ④ 이행) | 수동 `kubectl rollout restart` (Day 7 패턴 유지) / Reloader 외부 컨트롤러 / 코드 watcher | Day 7 = 수동 → Day 10 = 자동 *점진적 추상화*. Reloader 는 외부 의존성 추가라 캡스톤 미적용 (Phase 5 컨트롤러 패턴 학습 시 다시 등장). 자주 하는 실수 #28 → 해결 패턴이 자동화됨. |
+| ④ | **kube-prometheus-stack / argo-workflows / prometheus-adapter 의존 차트 미포함** | `Chart.yaml dependencies:` 에 3 개 의존 추가 | ① 세 의존이 모두 *클러스터 단일 인스턴스* 라 캡스톤 release 마다 새로 설치되면 충돌 ② install/upgrade 사이클 30 초 → 5 분+ 로 학습 가치 감소 ③ Phase 3-01 의 *Phase 2 매니페스트 패키징* 패턴 계승 — 본 차트는 *RAG-LLM 시스템 자체* 만 패키징. NOTES.txt 가 별도 설치 명령 안내. |
+
+### 8.5 라이프사이클 4 명령 (Phase 3-01 lab Step 6~8 인용)
+
+```bash
+# install / upgrade / rollback / uninstall
+helm install rag-llm helm/ -n rag-llm --create-namespace -f helm/values-prod.yaml ...
+
+# values 변경 — `--set ragApi.config.topK=5` → ConfigMap 변경 → checksum/config 갱신 → Pod rollout 자동
+helm upgrade rag-llm helm/ -n rag-llm -f helm/values-prod.yaml --set ragApi.config.topK=5
+
+# revision 비교 (helm template --revision 또는 `helm get manifest --revision`)
+helm history rag-llm -n rag-llm
+helm rollback rag-llm 1 -n rag-llm                  # 직전 revision 으로 복원
+
+# 정리 (PVC 는 데이터 보호 목적으로 남음 — 명시적 삭제 별도)
+helm uninstall rag-llm -n rag-llm
+kubectl get pvc -n rag-llm                          # qdrant-storage-qdrant-0, vllm-model-cache 잔존
+kubectl delete pvc -n rag-llm --all                 # 학습 종료 시
+```
 
 ---
 
 ## 9. 검증 시나리오
 
-<!-- TBD: Day 10 에서 작성합니다. 6 단계 통합 검증 + GKE 클러스터 삭제. -->
+캡스톤 완료 = `helm install` 한 줄 → §1~§6 6 단계가 모두 통과. 각 단계는 [labs/day-10-helm-integration-cleanup.md](labs/day-10-helm-integration-cleanup.md) 의 검증 체크리스트와 1:1 매핑.
+
+```bash
+# §0. 사전: 모든 Pod Running (~6~8 분 기다림)
+kubectl get all -n rag-llm
+
+# §1. 인덱싱 Workflow Succeeded
+argo submit -n rag-llm --serviceaccount workflow --from cronwf/rag-indexing-daily
+kubectl get wf -n rag-llm
+# → STATUS=Succeeded (5 step 완료, ~3~5 분), points_count > 0
+
+# §2. vLLM /v1/models 응답
+kubectl port-forward -n rag-llm svc/vllm 8000:8000 &
+curl http://localhost:8000/v1/models | jq '.data[0].id'
+# → "microsoft/phi-2"
+
+# §3. RAG end-to-end (1 줄 완료 기준)
+INGRESS=$(kubectl get ing -n rag-llm rag-api -o jsonpath='{.spec.rules[0].host}')
+curl http://$INGRESS/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"K8s에서 GPU 어떻게 잡지?"}],"top_k":3}' | jq
+# → 200 OK, answer 텍스트, sources 3 개 (인용 마커 [1]/[2]/[3])
+
+# §4. HPA REPLICAS 변동 (Day 9 부하 스크립트 재사용)
+LABEL=integration-check INGRESS_HOST=$INGRESS bash practice/llm_serving/load_test.sh
+watch kubectl get hpa,pods -n rag-llm
+# → rag-api HPA: 2→4 REPLICAS, vllm HPA: TARGETS 변동 (maxReplicas=2 학습 설계상 1 유지 가능)
+
+# §5. Helm 한 줄 재배포
+helm uninstall rag-llm -n rag-llm
+helm install rag-llm helm/ -n rag-llm --create-namespace \
+  -f helm/values-prod.yaml \
+  --set ragApi.image.repository=docker.io/<user>/rag-api \
+  --set indexing.imageRepository=docker.io/<user>/rag-indexer \
+  --set indexing.gitRepo=https://github.com/<user>/k8s-for-mle.git \
+  --set ingress.host=$INGRESS
+# → 6~8 분 후 §1~§4 동일 검증 통과
+
+# §6. GKE 클러스터 삭제 (필수)
+kubectl delete namespace rag-llm
+gcloud container clusters delete capstone --zone us-central1-a --quiet
+gcloud compute addresses list   # 잔여 0 확인
+gcloud compute disks list        # 잔여 0 확인
+```
+
+> 🚨 **GKE 비용 경고** — T4 GPU 노드 시간당 약 $0.35 + GCE Ingress 시간당 약 $0.025 + LoadBalancer External IP 시간당 약 $0.005 = 일 약 $9 누적. 캡스톤 종료 시 §6 의 `gcloud container clusters delete` 가 *필수*. 잔여 자원(External IP / Disks / LoadBalancer) 도 GCP Console 에서 직접 확인. 자세한 비용 산정은 [README.md](README.md) §GKE 비용 경고 표.
 
 ---
 
 ## 10. 🚨 자주 하는 실수
 
-<!-- 캡스톤 진행 중 발견 시 누적 추가합니다. 현재 Day 1(Qdrant/StatefulSet 3건) + Day 2(인덱싱 3건) + Day 3(Argo 3건) + Day 4(vLLM/GPU 3건) + Day 5(RAG API 3건) + Day 6(Ingress/배포 3건) + Day 7(ConfigMap/Secret/ServiceMonitor 3건) + Day 8(HPA/Grafana/adapter 3건) + Day 9(부하 테스트/튜닝 3건) = 27건. -->
+<!-- 캡스톤 진행 중 발견 시 누적 추가합니다. 현재 Day 1(Qdrant/StatefulSet 3건) + Day 2(인덱싱 3건) + Day 3(Argo 3건) + Day 4(vLLM/GPU 3건) + Day 5(RAG API 3건) + Day 6(Ingress/배포 3건) + Day 7(ConfigMap/Secret/ServiceMonitor 3건) + Day 8(HPA/Grafana/adapter 3건) + Day 9(부하 테스트/튜닝 3건) + Day 10(Helm 통합/비용 관리 3건) = 30건. -->
 
 **Day 1 — Qdrant / StatefulSet**
 
@@ -1817,13 +1961,52 @@ watch -n 5 kubectl get hpa,pods -n rag-llm
 
 27. **hey 의 `Successful responses` (200 OK) 만 보고 timeout / 5xx 무시 → 실제 사용자 체감보다 낙관적 평가** — hey 출력의 `Summary` 섹션은 `Total: 60.01 secs` 와 `Requests/sec: 22.34` 만 보면 시스템이 잘 동작한 것처럼 보이지만, `Status code distribution` 섹션의 `[200] 1320 responses` 와 `Error distribution` 섹션의 `[40] Connection timeout` 또는 `[15] EOF` 같은 항목을 *동시* 보지 않으면 *진짜 RPS* 와 *진짜 latency* 를 잘못 산출합니다. **증상**: hey 출력의 RPS 는 22 인데 학습자가 "초당 22 명을 처리한다" 로 결론 → 운영 배포 후 사용자의 5%가 *영원히 응답을 못 받는* (timeout) 상태. p95 latency 도 *200 OK 응답들 사이의 p95* 라서 timeout 은 latency 분포에 *포함되지 않음* — 실제 사용자 체감 p95 는 timeout 시간(보통 `--timeout` 기본 20s) 까지 포함해야 정확. **해결**: ① 결과 보고 시 *항상* `Status code distribution` + `Error distribution` 섹션을 함께 인용 — practice/llm_serving/load_test.sh 의 한 줄 요약에 `200_ok=N` 으로 카운트 노출. ② SLO 정의를 *200 OK 의 p95 + 99% availability* 두 축으로 — 캡스톤 RAG SLO 예시: chat p95 < 3s 이면서 200 OK 비율 > 99%. ③ hey 의 `-t` 옵션으로 timeout 명시 (`-t 30` = 30s 타임아웃) 후 `Error distribution` 행 수 확인. ④ Grafana 패널 ① (chat req/s status별) 의 *200 vs 5xx 색상 분리* 를 부하 도중 실시간 관찰. Day 9 c=32 단계가 본 위험을 직접 시연 — 일부 timeout 이 *의도된 결과* 임을 학습자가 인지해야 자주 하는 실수 #3 트러블슈팅과 일관.
 
-<!-- TBD: Day 10(Helm checksum/config 동기화, 정리 누락 비용 누수) 관련 추가 예정. -->
+**Day 10 — Helm 통합 / 비용 관리**
+
+28. **Helm 차트로 ConfigMap 변경했는데 Pod rollout 안 됨 → 옛 env 그대로** — `helm upgrade --set ragApi.config.topK=5` 했는데 RAG API 가 여전히 topK=3 으로 동작합니다. 원인은 Day 7 자주 하는 실수 #20 의 *재발* — Helm 이 ConfigMap 의 `data` 만 갱신하고 *Deployment 의 podTemplate 은 변경하지 않아* 기존 Pod 가 재시작되지 않기 때문입니다. **증상**: `helm upgrade` 출력은 `STATUS: deployed REVISION: 2` 정상인데 `kubectl get pods -n rag-llm` 의 RESTARTS=0, AGE 도 그대로. `kubectl exec deploy/rag-api -- env | grep TOP_K` 출력 = 3 (옛값). **해결**: ① 본 캡스톤 차트는 `templates/rag-api.yaml` Deployment 의 podTemplate annotation 에 `checksum/config: {{ include "..." . | sha256sum }}` 한 줄로 자동화 — ConfigMap 매니페스트 sha256 변경 시 annotation 변경 → podTemplate hash 변경 → 자동 rollout. ② annotation 누락된 학습자 차트라면 — `kubectl describe deployment rag-api -n rag-llm | grep checksum` 으로 부재 확인 → `templates/rag-api.yaml` 에 한 줄 추가. ③ Helm 외 — `kubectl rollout restart deployment/rag-api -n rag-llm` 즉시 트리거. ④ Reloader 외부 의존성 — `reloader.stakater.com/auto: true` annotation 만으로 자동화 (Phase 5 컨트롤러 패턴). 본 캡스톤 결정은 ① 자동화 (lesson.md §8.4 결정 박스 ③).
+29. **`--set ingress.host=` 누락 또는 LoadBalancer IP 미갱신 → install 실패 또는 Ingress 응답 없음** — `templates/ingress.yaml` 의 `{{- if not .Values.ingress.host }}{{- fail "..." }}{{- end }}` 가 빈 host 의 install 을 차단합니다. **증상 A** (install 차단): `helm install ... -f helm/values-prod.yaml` 명령이 `Error: ingress.host required` 로 즉시 실패. **증상 B** (host 갱신 누락): install 직후에는 `--set ingress.host="placeholder.nip.io"` 로 통과하지만, LoadBalancer IP 받은 후 host 를 갱신하지 않아 `curl http://placeholder.nip.io/chat` → DNS resolution failure. **해결**: ① 첫 install 은 placeholder host 로 — `--set ingress.host="placeholder.nip.io"`. ② Ingress IP 받은 후 (`kubectl get ing rag-api -n rag-llm -w` 의 ADDRESS 컬럼이 IP 로 채워질 때까지 ~3~5 분) 갱신 — `helm upgrade rag-llm helm/ -n rag-llm -f helm/values-prod.yaml --set ingress.host=$EXTERNAL_IP.nip.io --reuse-values`. ③ `--reuse-values` 누락 시 다른 `--set` 변수(image.repository 등) 가 모두 values.yaml 기본값으로 reset 되므로 *반드시* 함께 사용 — 이는 Helm 이 *upgrade 마다 values 를 새로 계산* 하는 동작에서 비롯되는 자주 하는 실수의 자주 하는 실수.
+30. **GKE 클러스터/노드 풀 미삭제로 비용 누수** — Day 6 자주 하는 실수 #18 (Ingress 비용) 의 *클러스터 단위 확장*. 캡스톤 종료 시 `helm uninstall` 만 실행하고 GKE 클러스터를 살려두면, *T4 GPU 노드 풀의 시간당 $0.35 + cluster management $0.10 + LoadBalancer/External IP $0.025+/시간* 이 *학습자가 잊고 있는 동안* 누적됩니다. 한 달이면 $250+ 비용. **증상**: 캡스톤 종료 후 1 주 후 GCP 결제 알림 → "예상치 못한 \$60 청구". `gcloud container clusters list` 출력에 `capstone us-central1-a RUNNING` 표시. **해결**: ① 매 Day 작업 끝에 *최소* `gcloud container node-pools resize gpu-pool --num-nodes=0 --cluster capstone --zone <zone>` 으로 GPU 노드 0 으로 축소 (T4 비용만 정지, cluster management $0.10/h 는 유지). ② 캡스톤 종료 시 *반드시* `gcloud container clusters delete capstone --zone us-central1-a --quiet`. ③ 잔여 자원 점검 4 종 — `gcloud compute addresses list` (Reserved External IP) / `gcloud compute disks list` (PVC 의 영속 디스크) / `gcloud compute forwarding-rules list` (LoadBalancer) / `gcloud compute target-pools list` 모두 빈 결과여야 함. ④ GCP 결제 알림 budget 설정 — 캡스톤 시작 전 `Cloud Billing > Budgets` 에서 \$50 budget + 50% 알림 설정으로 비용 누수 조기 발견. ⑤ 학습 환경에선 *클러스터 자동 삭제 cron* 도 가능 — `cloud-functions-cron` 으로 24h 후 자동 삭제. 본 캡스톤 [labs/day-10-helm-integration-cleanup.md](labs/day-10-helm-integration-cleanup.md) Step 10 이 ②~③ 을 체크박스로 강제.
 
 ---
 
 ## 11. 확장 아이디어
 
-<!-- TBD: Day 10 에서 작성합니다. reranker, 스트리밍, 멀티턴, RAGAS 평가. -->
+본 캡스톤을 *5 가지 방향* 으로 확장할 수 있습니다. 각 항목은 *어떤 메트릭이 개선되는가* + *어떤 기존 결정과 충돌하는가* 로 트레이드오프를 명시합니다.
+
+### ① reranker 도입 (cross-encoder)
+
+- **무엇**: retriever top_k=10 으로 후보 확장 → cross-encoder (`BAAI/bge-reranker-v2-m3` 등) 로 rerank → top 3 만 LLM context 로 전달.
+- **개선**: source precision 향상 (특히 한국어 자료 특수성). 답변의 인용 마커 정확도 ↑.
+- **충돌**: latency +500~1000ms (cross-encoder 1 회 forward). Day 9 부하 테스트의 chat p95 = 3s 가 4s 로 증가 가능 → HPA 임계값 재조정 필요.
+- **구현 위치**: `practice/rag_app/retriever.py` 의 `QdrantRetriever.search()` 출력에 `_rerank()` 메서드 추가. Day 7 ConfigMap 32 에 `RERANKER_MODEL` env 추가.
+
+### ② 스트리밍 응답 (vLLM `stream=true` + FastAPI SSE)
+
+- **무엇**: vLLM `/v1/chat/completions` 의 `stream=true` 활성 → FastAPI 가 Server-Sent Events 로 토큰을 *생성 즉시* 클라이언트에게 전송.
+- **개선**: 사용자 체감 latency 단축 (전체 응답 5s → 첫 토큰 0.5s + 마지막 토큰 5s). UX 만족도 ↑.
+- **충돌**: Day 5 의 `rag_chat_latency_seconds` 메트릭 의미 변화 — *전체 응답 완료* 시간이 아닌 *연결 종료* 시간이 됨. SLO 정의 재고. 인용 마커 [n] 의 *부분 출력* 처리 (앞 토큰만 보고 마커 분석 어려움).
+- **구현 위치**: `main.py` 의 `chat()` → `StreamingResponse` 변경. `llm_client.py` 의 `chat()` → AsyncGenerator 반환. 메트릭 분리 — `rag_chat_first_token_seconds` + `rag_chat_total_duration_seconds` 두 종.
+
+### ③ 멀티턴 대화 (대화 이력 압축)
+
+- **무엇**: 클라이언트 → `/chat` 호출 시 `messages: [user_1, assistant_1, user_2, ...]` 전체 이력 전달 → 서버는 직전 N 턴만 유지하고 그 이전은 *요약 압축*.
+- **개선**: 사용자 follow-up 질문이 자연스럽게 동작 ("그럼 위에서 말한 GPU 잡는 방법 더 자세히").
+- **충돌**: phi-2 max_model_len=2048 한계 → 5~6 턴 후 context 포화 → 압축 LLM 호출 추가 latency. Phase 5 *컨트롤러 패턴 학습* 후 (메타 LLM 호출은 캡스톤 범위 초과).
+- **구현 위치**: `prompts.py` 의 `build_messages()` → 히스토리 입력 받는 시그니처 변경. `main.py` 의 ChatRequest Pydantic → `messages: list[Message]` 자유 길이. 압축 메서드는 별도 `summarizer.py` 신규 모듈.
+
+### ④ RAGAS 평가 자동화 (faithfulness / answer_relevancy / context_precision)
+
+- **무엇**: RAGAS 라이브러리로 *질문 100 개 + 정답 + 검색 청크* 셋을 자동 채점. CronJob 으로 매일 03:30 (인덱싱 직후) 평가 → Prometheus pushgateway → Grafana 대시보드.
+- **개선**: 인덱싱 품질 *수치화* — 새 lesson.md 추가 / chunk_size 변경 시 RAGAS 점수 변동을 *자동 감지*.
+- **충돌**: 평가 자체에 LLM 호출 100 회 + GPT-4 같은 평가용 LLM 필요 (또는 phi-2 자체 평가의 한계). 비용 일 \$1~2 추가.
+- **구현 위치**: `practice/evaluation/` 신규 디렉토리. CronJob 매니페스트 + RAGAS evaluator Python 스크립트 + 평가 데이터셋 (`questions.jsonl`).
+
+### ⑤ vLLM scale-to-zero (KEDA + cold start 최적화)
+
+- **무엇**: KEDA(Kubernetes Event-Driven Autoscaling) 로 vLLM Deployment 가 *첫 요청 도달까지* replicas=0 유지. 첫 요청 시 Pod 기동 → cold start 5~10 분 → 응답.
+- **개선**: 야간/주말 사용 없을 때 GPU 비용 0. 본 캡스톤 prod 환경 일 비용 $9 → $0.5 (GCE Ingress + Qdrant + 클러스터 management 만).
+- **충돌**: 첫 요청 사용자 *5~10 분 대기*. PVC hit 시 ~2 분으로 단축 가능하지만 여전히 사용자 체감 큼. SLA *최초 요청 응답* 보장 X.
+- **구현 위치**: KEDA Helm install + ScaledObject CRD (`triggers: [{type: prometheus, query: rag_chat_total[5m]>0}]`). vLLM HPA 25 와 충돌하므로 둘 중 하나 선택. Phase 5 *비용 최적화 패턴* 학습 시 다시.
 
 ---
 
@@ -1831,14 +2014,23 @@ watch -n 5 kubectl get hpa,pods -n rag-llm
 
 본 캡스톤을 마쳤다면 두 갈래 중 하나로 이어갑니다.
 
-- **Phase 5 (선택)** — Operator, Service Mesh, GitOps, 멀티 클러스터로 심화. [`docs/study-roadmap.md`](../../docs/study-roadmap.md) Phase 5 섹션 참고.
-- **자기 업무 적용** — 본인이 다루는 모델·데이터로 같은 아키텍처를 재구성합니다. 가장 큰 학습은 본 코스 자료가 아닌 **본인 문제**에 적용할 때 일어납니다.
+- **Phase 5 (선택)** — Operator, Service Mesh, GitOps, 멀티 클러스터로 심화. [`docs/study-roadmap.md`](../../docs/study-roadmap.md) Phase 5 섹션 참고. 본 캡스톤 차트가 ArgoCD 의 *Application* 으로 자동 sync 되는 흐름이 다음 학습 지점.
+- **자기 업무 적용** — 본인이 다루는 모델·데이터로 같은 아키텍처를 재구성합니다. 가장 큰 학습은 본 코스 자료가 아닌 **본인 문제**에 적용할 때 일어납니다. 본 차트의 *2 줄 변경* 으로 시작 — `vllm.modelName` 을 회사 모델 ID 로, `ragApi.config.embedModel` 을 회사 도메인에 맞는 임베딩 모델로.
 
-<!-- TBD: Day 10 에서 보강. 캡스톤 완료 후 회고 체크리스트, GKE 비용 정산 안내 등. -->
+### 캡스톤 완료 회고 체크리스트 (8 항목)
+
+- [ ] 학습 목표 6 개 모두 *직접* 검증 — `kubectl get` 으로 매니페스트 / `curl` 로 응답 / `helm history` 로 라이프사이클
+- [ ] §9 검증 시나리오 6 단계 모두 통과 (Helm 한 줄 재배포 후에도 동일)
+- [ ] 자주 하는 실수 30 건 중 *직접 마주친* 항목 표시 — 학습자별 메모로 보관 (다음 K8s 작업 시 재발 방지)
+- [ ] GKE 클러스터 삭제 + 잔여 자원 0 확인 (External IP / Disks / LoadBalancer / forwarding-rules)
+- [ ] GCP 결제 *최종 청구액* 확인 — 캡스톤 시작 ~ 종료 사이 비용이 예산($50?) 안에 들어왔는지
+- [ ] 본 차트의 *내 fork* 또는 *내 회사 repo* 에 옮긴 후 모델/데이터만 교체해 1 회 install 시도
+- [ ] capstone-plan.md §10 작성 품질 체크리스트 12 항목 모두 점검 (학습자 본인 학습 자료 작성 시점에)
+- [ ] Phase 5 진입 vs 자기 업무 적용 *둘 중 하나* 선택 — 다음 학습 방향을 1 줄로 적어두기
 
 ---
 
-## Day 1~7 실습 가이드
+## Day 1~10 실습 가이드
 
 본 lesson.md 의 내용을 직접 클러스터/로컬에서 적용해 보려면 다음 lab 들을 순서대로 진행하세요. 각 lab 은 Goal / 사전 조건 / Step / 검증 / 정리 5 단계 + 트러블슈팅 표 구조입니다.
 
@@ -1849,3 +2041,6 @@ watch -n 5 kubectl get hpa,pods -n rag-llm
 - [`labs/day-05-rag-api-impl.md`](labs/day-05-rag-api-impl.md) — `practice/rag_app/` 6 모듈 + 단위 테스트 작성, port-forward 2 개(Qdrant 6333 + vLLM 8000) + `uvicorn main:app --port 8001` → `curl /chat` 200 OK + sources 3 개 + `pytest tests/` 통과 (lesson §2.3·§3.1·§5)
 - [`labs/day-06-rag-api-deploy.md`](labs/day-06-rag-api-deploy.md) — Docker Hub 본인 계정으로 `rag-api:0.1.0` 이미지 빌드/푸시 + Deployment(replicas=2) + Service + GCE Ingress 적용 → 외부 IP 부여 + nip.io host → `/chat` end-to-end 200 OK (lesson §3.1 Day 6 보강·§4.4·§4.5)
 - [`labs/day-07-config-secret-monitoring.md`](labs/day-07-config-secret-monitoring.md) — env 6 종을 ConfigMap 32 + Secret 33 으로 분리 + `envFrom` 일괄 주입 리팩토링 → kube-prometheus-stack 설치 + ServiceMonitor 24/34 적용 → Prometheus Targets UP 검증 + PromQL `rate(rag_chat_total[1m])` 그래프 (lesson §4.4 결정 박스 ②·§4.8·§4.9·§6)
+- [`labs/day-08-grafana-hpa.md`](labs/day-08-grafana-hpa.md) — Grafana sidecar 자동 import + prometheus-adapter Helm install + custom.metrics.k8s.io API 노출 → HPA 25/35 적용 → hey 60s 부하로 REPLICAS 변동 + 4 패널 대시보드 동시 변동 관측 (lesson §6 보강·§7)
+- [`labs/day-09-load-test-tuning.md`](labs/day-09-load-test-tuning.md) — `practice/llm_serving/load_test.sh` 로 c=8/16/32 3 단계 부하 → Prometheus 5 메트릭 캡처 + RAG 단계별 분해 PromQL → vLLM args 0.85→0.90 안전 상향 1 회전 튜닝 → before/after 비교 표 5 지표 (lesson §10 #25~#27 + architecture.md §3.14)
+- [`labs/day-10-helm-integration-cleanup.md`](labs/day-10-helm-integration-cleanup.md) — `helm/` 차트 한 줄 install (dev → prod) + ConfigMap 변경 → checksum/config 자동 rollout 검증 + `helm rollback` 라이프사이클 + §9 6 단계 통합 검증 + GKE 클러스터 삭제 + 잔여 자원 점검 (lesson §8·§9·§10 #28~#30)

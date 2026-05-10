@@ -1,0 +1,245 @@
+{{/*
+templates/vllm.yaml — vLLM (LLM 서빙 컨테이너) 6 매니페스트 통합
+
+raw 매니페스트 매핑 (Day 4/7/8):
+  ・ manifests/20-vllm-deployment.yaml      → 본 파일 §1 Deployment
+  ・ manifests/21-vllm-pvc.yaml             → 본 파일 §2 PVC
+  ・ manifests/22-vllm-service.yaml         → 본 파일 §3 Service
+  ・ manifests/23-vllm-hf-secret.yaml       → 본 파일 §4 Secret (vllm.hfToken 비어 있으면 생성 안 함)
+  ・ manifests/24-vllm-servicemonitor.yaml  → 본 파일 §5 ServiceMonitor (serviceMonitor.enabled)
+  ・ manifests/25-vllm-hpa.yaml             → 본 파일 §6 HPA (hpa.enabled)
+
+핵심 결정 (Day 4/7/8):
+  ① args 6 종 — `--served-model-name=microsoft/phi-2` 명시 (RAG API 와 일치 강제, 자주 하는 실수 #14)
+  ② GPU 격리 3 종 — nodeSelector + tolerations + nvidia.com/gpu resource (자주 하는 실수 #10)
+  ③ /dev/shm tmpfs 4Gi — CUDA IPC 통신 (Phase 4-3 자주 하는 실수 2번)
+  ④ startupProbe failureThreshold=60 — phi-2 첫 다운로드 5GB 대기 (10 분)
+  ⑤ HPA: vllm_num_requests_running averageValue=8 + behavior 비대칭 (scaleUp 0s, scaleDown 300s)
+
+vllm.enabled=false 시 (values-dev.yaml):
+  6 매니페스트 모두 렌더 안 됨 — RAG API 의 /chat 호출은 503 not_ready 가 나오는 것이 의도된 학습 결과.
+*/}}
+{{- if .Values.vllm.enabled -}}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §1. Deployment (manifests/20)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm" "role" "llm-serving") | nindent 4 }}
+spec:
+  replicas: 1                                  # vLLM 은 GPU 1 장 = 1 Pod 표준. HPA 가 Day 8 결정대로 1 → 2 까지.
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "capstone-rag-llm.commonLabels" . | nindent 8 }}
+        {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm" "role" "llm-serving") | nindent 8 }}
+    spec:
+      {{- if .Values.vllm.gpu.enabled }}
+      # GPU 노드 격리 3 종 (Phase 4/01 패턴) — gpu.enabled=false 시 통째로 제외
+      nodeSelector:
+        {{- toYaml .Values.vllm.gpu.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.vllm.gpu.tolerations | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vllm
+          image: "{{ .Values.vllm.image.repository }}:{{ .Values.vllm.image.tag }}"
+          imagePullPolicy: {{ .Values.vllm.image.pullPolicy }}
+          # vLLM 핵심 args 6 종 (Day 4 결정 — --served-model-name 포함)
+          args:
+            - --model={{ .Values.vllm.modelName }}
+            - --served-model-name={{ .Values.vllm.servedModelName }}
+            - --gpu-memory-utilization={{ .Values.vllm.gpuMemoryUtilization }}
+            - --max-model-len={{ .Values.vllm.maxModelLen }}
+            - --port=8000
+            - --dtype={{ .Values.vllm.dtype }}
+          ports:
+            - { name: http, containerPort: 8000 }
+          env:
+            # HF 토큰 — phi-2 public 이라 optional. gated 모델 교체 시 vllm.hfToken 채움.
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: HF_TOKEN
+                  optional: true
+            - name: HF_HOME
+              value: /root/.cache/huggingface
+          resources:
+            requests:
+              {{- toYaml .Values.vllm.resources.requests | nindent 14 }}
+              {{- if .Values.vllm.gpu.enabled }}
+              nvidia.com/gpu: {{ .Values.vllm.gpu.count }}
+              {{- end }}
+            limits:
+              {{- toYaml .Values.vllm.resources.limits | nindent 14 }}
+              {{- if .Values.vllm.gpu.enabled }}
+              nvidia.com/gpu: {{ .Values.vllm.gpu.count }}
+              {{- end }}
+          # 3 종 Probe — startupProbe 가 통과할 때까지 K8s 가 livenessProbe 보호 (무한 재시작 방지)
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            failureThreshold: {{ .Values.vllm.probes.startupFailureThreshold }}
+            periodSeconds: {{ .Values.vllm.probes.periodSeconds }}
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - { name: model-cache, mountPath: /root/.cache/huggingface }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-model-cache
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+      terminationGracePeriodSeconds: 60
+---
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §2. PVC (manifests/21) — 모델 캐시 20Gi
+     ═══════════════════════════════════════════════════════════════════════ */}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-model-cache
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm" "role" "llm-serving") | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.vllm.persistence.size }}
+  storageClassName: {{ .Values.vllm.persistence.storageClass }}
+---
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §3. Service (manifests/22) — ClusterIP 8000
+     ═══════════════════════════════════════════════════════════════════════ */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm" "role" "llm-serving") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §4. Secret (manifests/23) — HF Token (vllm.hfToken 있을 때만 생성)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+{{- if .Values.vllm.hfToken }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hf-secret
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm" "role" "llm-serving") | nindent 4 }}
+type: Opaque
+stringData:
+  HF_TOKEN: {{ .Values.vllm.hfToken | quote }}
+{{- end }}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §5. ServiceMonitor (manifests/24) — release: prom 라벨 매칭 (Day 7)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+{{- if .Values.vllm.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vllm
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm" "role" "llm-serving") | nindent 4 }}
+    # Prometheus CR 의 serviceMonitorSelector 와 매칭 — 자주 하는 실수 #19
+    release: {{ .Values.vllm.serviceMonitor.releaseLabel }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm") | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.vllm.serviceMonitor.interval }}
+      scrapeTimeout: 10s
+{{- end }}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §6. HPA (manifests/25) — vllm_num_requests_running Pods 메트릭 (Day 8)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+{{- if .Values.vllm.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vllm
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "vllm" "role" "llm-serving") | nindent 4 }}
+    autoscaler: requests-running
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment                           # ⚠ ReplicaSet 이 아닌 Deployment (자주 하는 실수 #23)
+    name: vllm
+  minReplicas: {{ .Values.vllm.hpa.minReplicas }}
+  maxReplicas: {{ .Values.vllm.hpa.maxReplicas }}
+  metrics:
+    - type: Pods                               # Pod 별 평균값 (averageValue)
+      pods:
+        metric:
+          name: {{ .Values.vllm.hpa.metricName }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.vllm.hpa.averageValue | quote }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.vllm.hpa.scaleUpStabilization }}
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.vllm.hpa.scaleDownStabilization }}
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+{{- end }}
+
+{{- end }}

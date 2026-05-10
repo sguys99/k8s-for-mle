@@ -1,0 +1,216 @@
+# capstone-rag-llm 차트 기본값 (values.yaml)
+#
+# 우선순위:  values.yaml (이 파일, 가장 낮음) < -f values-<env>.yaml < --set < --set-file
+# 본 파일은 *어떤 환경에서도 합리적인 출발점* 이어야 하며, dev/prod 가 차이 나는 키만 환경 파일이 덮어씁니다.
+#
+# 본 차트의 7 컴포넌트 (lesson.md §8.1):
+#   namespace / qdrant / vllm / ragApi / ingress / monitoring / indexing
+# 각 컴포넌트는 `enabled` 플래그로 *개별 끄고 켜기* 가능 — values-dev.yaml 이 vllm.enabled=false 로 CPU 환경 학습.
+#
+# 사용 예 (values-prod.yaml + 학습자별 변수 주입):
+#   helm install rag-llm helm/ -f helm/values-prod.yaml -n rag-llm --create-namespace \
+#     --set ragApi.image.repository=docker.io/<user>/rag-api \
+#     --set indexing.imageRepository=docker.io/<user>/rag-indexer \
+#     --set indexing.gitRepo=https://github.com/<user>/k8s-for-mle.git \
+#     --set ingress.host=<EXTERNAL_IP>.nip.io                       # Step 5 LoadBalancer IP 받은 후 helm upgrade
+
+# ─ 1) Namespace ────────────────────────────────────────────────────────────
+# 모든 캡스톤 자원이 들어갈 namespace. Day 1 의 manifests/00-namespace.yaml 와 동일.
+namespace: rag-llm
+
+# ─ 2) Qdrant (Vector DB) ──────────────────────────────────────────────────
+# Day 1 manifests/10-qdrant-statefulset.yaml + 11-qdrant-service.yaml 패키징.
+qdrant:
+  enabled: true                                # values-dev.yaml 도 true 유지 — 인덱싱 학습이 가능해야 함
+  image:
+    repository: qdrant/qdrant
+    tag: v1.11.3
+    pullPolicy: IfNotPresent
+  replicas: 1                                  # Day 1 결정 — 단일 replica StatefulSet, 향후 Qdrant 클러스터링 시 증가
+  persistence:
+    size: 5Gi                                  # 본 코스 자료 인덱싱 1~2GB + 여유분 (Day 1 PVC 산정 근거)
+    storageClass: standard                     # GKE 기본 (minikube 는 'standard' 또는 'hostpath')
+    accessMode: ReadWriteOnce
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits:   { cpu: "500m", memory: "512Mi" }
+
+# ─ 3) vLLM (LLM 서빙) ────────────────────────────────────────────────────
+# Day 4/7/8 manifests/20-vllm-deployment + 21-pvc + 22-service + 23-secret + 24-servicemonitor + 25-hpa 패키징.
+# values-dev.yaml 에서 vllm.enabled=false 로 *전체 컴포넌트* 비활성 (Helm 차트 흐름만 학습).
+vllm:
+  enabled: true                                # values-dev.yaml 가 false 로 덮어씀
+  image:
+    repository: vllm/vllm-openai
+    tag: v0.6.6.post1                          # Phase 4-3 + Day 4 결정 — OpenAI 호환 API chat-template 안정 버전
+    pullPolicy: IfNotPresent
+
+  # 모델 설정 — Day 4 결정 ② (--served-model-name 명시 + RAG API 와 일치 강제)
+  modelName: microsoft/phi-2                   # HF Hub 모델 ID (--model)
+  servedModelName: microsoft/phi-2             # OpenAI SDK 의 model 파라미터 값 (RAG API 의 LLM_MODEL 과 일치 필수)
+  gpuMemoryUtilization: "0.85"                 # Day 9 baseline. values-prod.yaml 가 0.90 으로 안전 상향 (튜닝 결과 반영)
+  maxModelLen: "2048"                          # phi-2 학습 시 max context. 늘릴 수 없음
+  dtype: auto                                  # T4 자동 FP16 (T4 는 BF16 미지원이라 auto 가 안전)
+
+  # GPU 자원 — values-dev.yaml 가 enabled=false 로 GPU 자원 자체를 제거
+  gpu:
+    enabled: true
+    count: 1                                   # T4 1 장 = 1 Pod 표준 (Phase 4-3 패턴)
+    nodeSelector:
+      cloud.google.com/gke-accelerator: nvidia-tesla-t4
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+  # PVC (모델 캐시 20Gi) — Day 4 결정, 두 번째 기동 시 30 초 안에 ready
+  persistence:
+    size: 20Gi
+    storageClass: standard
+
+  # HF Token — phi-2 public 이라 Secret 미적용 디폴트 (Day 4 결정 박스 ④)
+  hfToken: ""                                  # gated 모델 교체 시 --set vllm.hfToken=hf_xxx 으로 주입
+
+  resources:
+    requests: { cpu: "2", memory: "8Gi" }
+    limits:   { cpu: "4", memory: "16Gi" }
+
+  # 3 종 Probe — startupProbe failureThreshold=60 (10 분) 로 phi-2 첫 다운로드 대기
+  probes:
+    startupFailureThreshold: 60                # 60 × 10s = 10 분
+    periodSeconds: 10
+
+  # ServiceMonitor — Day 7 결정 (release: prom 라벨 매칭)
+  serviceMonitor:
+    enabled: false                             # values-prod.yaml 가 true 로
+    releaseLabel: prom                         # kube-prometheus-stack release name 과 일치 (자주 하는 실수 #19)
+    interval: 15s                              # vLLM 은 분 단위 변동 → 15s 자주 (RAG API 30s 보다 짧게)
+
+  # HPA — Day 8 결정 (vllm_num_requests_running, behavior 비대칭)
+  hpa:
+    enabled: false                             # values-prod.yaml 가 true 로
+    minReplicas: 1
+    maxReplicas: 2                             # T4 노드 풀 1 대 *체험형 학습 설계* (architecture.md §3.13.4)
+    metricName: vllm_num_requests_running      # adapter 별칭 — 콜론(`:`) 안전성 (자주 하는 실수 #22)
+    averageValue: "8"                          # Pod 당 평균 8 RPS-running (continuous batching 안전선)
+    scaleUpStabilization: 0                    # 즉시 — vLLM cold start 길어 지연 없이 트리거
+    scaleDownStabilization: 300                # 5 분 — 부하 종료 후 떨림 방지
+
+# ─ 4) RAG API ─────────────────────────────────────────────────────────────
+# Day 6/7/8 manifests/30~35 패키징.
+# ConfigMap sha256 → Deployment podTemplate annotation `checksum/config` 자동화 (Day 7 결정 박스 ④ 이행).
+ragApi:
+  enabled: true
+  image:
+    repository: docker.io/CHANGE_ME/rag-api    # `--set ragApi.image.repository=docker.io/<user>/rag-api` 로 학습자별 주입
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicas: 2                                  # Day 6 결정 — stateless 라 수평 확장. values-dev.yaml 가 1 로
+
+  # ConfigMap 6 키 (Day 7 manifests/32) — envFrom 일괄 주입
+  config:
+    qdrantUrl: "http://qdrant.rag-llm.svc.cluster.local:6333"
+    qdrantCollection: "rag-docs"               # Day 2 인덱싱 컬렉션명. indexing.collection 과 동기화 필수
+    embedModel: "intfloat/multilingual-e5-small"   # Day 2 결정 (한국어 자료 대응 384 dim)
+    llmBaseUrl: "http://vllm.rag-llm.svc.cluster.local:8000/v1"
+    llmModel: "microsoft/phi-2"                # vllm.servedModelName 와 *완전 동일 문자열* 필수 (자주 하는 실수 #14)
+    topK: "3"
+
+  # HF Token — RAG API 자체는 HF Hub 호출이 적어 미적용 디폴트 (Day 7 결정 박스 ②)
+  hfToken: ""
+
+  resources:
+    requests: { cpu: "200m", memory: "1Gi" }
+    limits:   { cpu: "1",    memory: "2Gi" }
+
+  # 3 종 Probe — vLLM 보다 짧은 startupProbe (e5-small 130MB 만 다운로드)
+  probes:
+    startupFailureThreshold: 30                # 30 × 10s = 5 분
+    periodSeconds: 10
+
+  # emptyDir 모델 캐시 (130MB e5-small + 여유 1Gi)
+  modelCacheSize: 1Gi
+
+  # Service
+  service:
+    port: 8001
+    targetPort: http
+
+  # ServiceMonitor — Day 7 결정 (release: prom 라벨 매칭)
+  serviceMonitor:
+    enabled: false                             # values-prod.yaml 가 true 로
+    releaseLabel: prom
+    interval: 30s                              # RAG API 는 RPS 변동 1 분 단위 → 30s
+
+  # HPA — Day 8 결정 (rag_chat_requests_per_second, Counter rate 변환)
+  hpa:
+    enabled: false                             # values-prod.yaml 가 true 로
+    minReplicas: 2                             # Day 6 RollingUpdate maxUnavailable=0 일관 (다운타임 0)
+    maxReplicas: 6
+    metricName: rag_chat_requests_per_second   # adapter 별칭 — _total → _per_second
+    averageValue: "10"                         # Day 7 측정 12 RPS 의 80% 안전선
+    scaleUpStabilization: 0
+    scaleDownStabilization: 300
+
+# ─ 5) Ingress ─────────────────────────────────────────────────────────────
+# Day 6 manifests/40-ingress.yaml 패키징.
+# host 는 LoadBalancer IP 받은 후 nip.io 형식으로 helm upgrade --set ingress.host=<IP>.nip.io
+ingress:
+  enabled: false                               # values-prod.yaml 가 true 로
+  className: gce                               # GKE 기본. nginx 환경이면 `nginx` (annotations 도 함께 변경 필요)
+  host: ""                                     # required — install 시 빈 값이면 templates/ingress.yaml 가 fail
+  paths:
+    - path: /chat
+      pathType: Prefix
+    - path: /healthz
+      pathType: Prefix
+
+# ─ 6) Monitoring ──────────────────────────────────────────────────────────
+# Day 8 manifests/60 (adapter values) + 61 (Grafana dashboard CM) 패키징.
+# adapter values 는 *별도 ConfigMap* 으로 동봉 — `helm install prometheus-adapter ... -f` 명령으로 사용
+# (lesson.md §8.4 결정 — adapter 자체는 본 차트가 install 하지 않음).
+monitoring:
+  prometheusAdapter:
+    enabled: false                             # values-prod.yaml 가 true 로 (ConfigMap 만 생성, 별도 helm install 안내)
+    prometheusUrl: "http://prom-kube-prometheus-stack-prometheus.monitoring.svc:9090"
+  grafanaDashboard:
+    enabled: false                             # values-prod.yaml 가 true 로
+    namespace: monitoring                      # Grafana sidecar 가 watch (관행상 monitoring)
+    sidecarLabel: grafana_dashboard            # values: "1" 매칭 시 자동 import
+
+# ─ 7) Indexing (Argo Workflow) ────────────────────────────────────────────
+# Day 3 manifests/49 (RBAC) + 50 (Workflow) + 51 (CronWorkflow) 패키징.
+# Argo controller 는 별도 namespace `argo` 에 사전 설치 (lesson.md §8.4 결정 박스 — 의존 차트 미포함 이유 ②).
+indexing:
+  enabled: true                                # values-dev.yaml 도 true 유지 — Qdrant 가 살아있으면 인덱싱 가능
+  argoNamespace: argo                          # Workflow controller 가 사는 namespace (RBAC 분리)
+  serviceAccountName: workflow                 # Day 3 49-argo-rbac.yaml 의 SA 이름
+
+  # 컨테이너 이미지 — `--set indexing.imageRepository=docker.io/<user>/rag-indexer` 로 학습자별 주입
+  imageRepository: docker.io/CHANGE_ME/rag-indexer
+  imageTag: "0.1.0"
+
+  # Git clone step (50/51 의 첫 step) — `--set indexing.gitRepo=https://github.com/<user>/k8s-for-mle.git` 로 주입
+  gitRepo: "https://github.com/CHANGE_ME/k8s-for-mle.git"
+  gitBranch: main
+
+  # 인덱싱 파라미터 — Day 2 결정 (한국어 자료 대응 e5-small)
+  collection: rag-docs                         # ragApi.config.qdrantCollection 와 동기화 필수
+  chunkSize: "512"
+  chunkOverlap: "64"
+  embeddingModel: "intfloat/multilingual-e5-small"
+
+  # CronWorkflow (51-indexing-cronworkflow.yaml) — Day 3 결정 (concurrencyPolicy: Replace + KST 03:00)
+  cron:
+    enabled: true                              # CronWorkflow 도 본 차트로 함께 배포. 학습자가 끄고 싶으면 --set indexing.cron.enabled=false
+    schedule: "0 3 * * *"                      # 매일 KST 03:00
+    timezone: Asia/Seoul
+    concurrencyPolicy: Replace                 # idempotent upsert 라 Replace 안전 (Day 3 결정 박스 ④)
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 1
+    startingDeadlineSeconds: 300
+
+  # Workflow 자체는 `kubectl apply` 만으로는 실행 안 됨 — `argo submit` 또는 CronWorkflow 의 schedule 발동
+  # 본 차트는 *Workflow CRD 를 등록만* 하고, 학습자가 lab Step 에서 `argo submit ...` 로 1 회 실행.
+  # 이 디자인 근거: Workflow 는 *실행 인스턴스* 라 install 시점에 자동 실행되면 비용 발생.
+  workflowOnInstall: false                     # 본 차트가 install 시에 Workflow 도 자동 시작할지 — 기본 false

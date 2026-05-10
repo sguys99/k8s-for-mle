@@ -1,0 +1,46 @@
+{{/*
+templates/ingress.yaml — GCE Ingress 외부 노출 (Day 6 manifests/40)
+
+핵심 결정 (Day 6):
+  ① ingressClassName 명시 (annotations 도 GCE 만 인식하는 것만 보존)
+  ② host 는 install 시점에는 빈 값 → required 검증으로 첫 install 차단 (자주 하는 실수 #29)
+  ③ /chat + /healthz 두 path 외부 노출 — vLLM 은 외부 노출 안 함 (보안/단순성)
+  ④ TLS 미설정 — Phase 5 cert-manager + Let's Encrypt 통합 시점에 추가
+
+ingress.enabled=false 시 (values-dev.yaml):
+  Ingress 미생성. 학습자는 `kubectl port-forward -n rag-llm svc/rag-api 8001:8001` 로 검증.
+
+Step 5 LoadBalancer IP 받은 후 host 갱신:
+  helm upgrade rag-llm helm/ -n rag-llm -f helm/values-prod.yaml \
+    --set ingress.host=$(kubectl get ing rag-api -n {{ .Values.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}').nip.io
+*/}}
+{{- if .Values.ingress.enabled -}}
+{{- if not .Values.ingress.host }}
+{{- fail "ingress.host required — install 시 `--set ingress.host=<EXTERNAL_IP>.nip.io` 또는 values-prod.yaml 에 명시 (자주 하는 실수 #29)" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rag-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api" "role" "rag-api") | nindent 4 }}
+  annotations:
+    # GCE Ingress controller — GKE 기본. nginx 환경이면 className: nginx + nginx 전용 annotations
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | quote }}
+spec:
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          {{- range .Values.ingress.paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: rag-api
+                port:
+                  name: http                   # 31-rag-api-service.yaml 의 named port (자주 하는 실수 #16)
+          {{- end }}
+{{- end }}

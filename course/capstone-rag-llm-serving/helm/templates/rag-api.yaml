@@ -1,0 +1,226 @@
+{{/*
+templates/rag-api.yaml — RAG API 6 매니페스트 통합 + checksum/config 자동화
+
+raw 매니페스트 매핑 (Day 6/7/8):
+  ・ manifests/30-rag-api-deployment.yaml      → 본 파일 §1 Deployment + checksum/config annotation
+  ・ manifests/31-rag-api-service.yaml         → 본 파일 §2 Service
+  ・ manifests/32-rag-api-configmap.yaml       → 본 파일 §3 ConfigMap
+  ・ manifests/33-rag-api-secret.yaml          → 본 파일 §4 Secret (ragApi.hfToken 있을 때만 생성)
+  ・ manifests/34-rag-api-servicemonitor.yaml  → 본 파일 §5 ServiceMonitor (serviceMonitor.enabled)
+  ・ manifests/35-rag-api-hpa.yaml             → 본 파일 §6 HPA (hpa.enabled)
+
+핵심 결정 (Day 6/7/8/10):
+  ① Day 7 envFrom 일괄 주입 — env 6 줄 → configMapRef + secretRef.optional 2 줄
+  ② Day 7 Deployment podTemplate 의 `checksum/config` annotation — *Day 10 자동화* (lesson.md §4.8 결정 박스 ④ 이행)
+     → ConfigMap sha256 변경 시 Deployment rollout 자동 (수동 `kubectl rollout restart` 불필요, 자주 하는 실수 #28 대응)
+  ③ Day 6 RollingUpdate maxUnavailable=0 — 다운타임 0 보장 (1 줄 완료 기준 항상 통과)
+  ④ Day 8 HPA averageValue=10 — Day 7 측정 12 RPS 의 80% 안전선
+*/}}
+{{- if .Values.ragApi.enabled -}}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §1. Deployment (manifests/30) + checksum/config 자동화
+     ═══════════════════════════════════════════════════════════════════════ */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api" "role" "rag-api") | nindent 4 }}
+spec:
+  replicas: {{ .Values.ragApi.replicas }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1                              # replicas=2 시 일시적 3 Pod (가용성 우선)
+      maxUnavailable: 0                        # 다운타임 0 (Day 6 1 줄 완료 기준 회귀 방지)
+  template:
+    metadata:
+      labels:
+        {{- include "capstone-rag-llm.commonLabels" . | nindent 8 }}
+        {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api" "role" "rag-api") | nindent 8 }}
+      annotations:
+        # ── Day 10 핵심 자동화 (lesson.md §4.8 결정 박스 ④ 이행) ──
+        # ConfigMap 의 sha256 → Pod 템플릿 annotation. ConfigMap 변경 → annotation 변경 → Pod rollout 자동.
+        # `helm upgrade --set ragApi.config.topK=5` 한 줄로 ConfigMap 변경 + Pod 재기동 자동 트리거.
+        # (자주 하는 실수 #28 — checksum/config 누락 시 ConfigMap 변경 후 rollout 안 됨)
+        checksum/config: {{ include (print $.Template.BasePath "/rag-api.yaml") . | sha256sum | trunc 16 }}
+    spec:
+      containers:
+        - name: rag-api
+          image: "{{ .Values.ragApi.image.repository }}:{{ .Values.ragApi.image.tag }}"
+          imagePullPolicy: {{ .Values.ragApi.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 8001 }
+          # Day 7 envFrom 일괄 주입 — ConfigMap + Secret(optional) 두 블록만
+          envFrom:
+            - configMapRef:
+                name: rag-api-config
+            {{- if .Values.ragApi.hfToken }}
+            - secretRef:
+                name: rag-api-secrets
+                optional: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.ragApi.resources | nindent 12 }}
+          # 3 종 Probe — vLLM 보다 짧은 timeout (e5-small 130MB 만 다운로드)
+          startupProbe:
+            httpGet: { path: /ready, port: http }
+            failureThreshold: {{ .Values.ragApi.probes.startupFailureThreshold }}
+            periodSeconds: {{ .Values.ragApi.probes.periodSeconds }}
+          readinessProbe:
+            httpGet: { path: /ready, port: http }    # Day 5 결정 — lifespan 완료 후 200
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }  # Day 5 결정 — 프로세스 응답 가능 여부
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /home/app/.cache/huggingface
+      volumes:
+        - name: hf-cache
+          emptyDir:
+            sizeLimit: {{ .Values.ragApi.modelCacheSize }}
+      terminationGracePeriodSeconds: 30
+---
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §2. Service (manifests/31) — ClusterIP 8001 (named port: http)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api" "role" "rag-api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api") | nindent 4 }}
+  ports:
+    - name: http                               # Day 7 ServiceMonitor + Day 6 Ingress 의 named port 참조
+      port: {{ .Values.ragApi.service.port }}
+      targetPort: {{ .Values.ragApi.service.targetPort }}
+      protocol: TCP
+      appProtocol: http                        # GCE Ingress backend protocol 자동 감지
+---
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §3. ConfigMap (manifests/32) — env 6 키 (Day 7)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-api-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api" "role" "rag-api") | nindent 4 }}
+data:
+  QDRANT_URL: {{ .Values.ragApi.config.qdrantUrl | quote }}
+  QDRANT_COLLECTION: {{ .Values.ragApi.config.qdrantCollection | quote }}
+  EMBED_MODEL: {{ .Values.ragApi.config.embedModel | quote }}
+  LLM_BASE_URL: {{ .Values.ragApi.config.llmBaseUrl | quote }}
+  LLM_MODEL: {{ .Values.ragApi.config.llmModel | quote }}
+  TOP_K: {{ .Values.ragApi.config.topK | quote }}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §4. Secret (manifests/33) — HF Token (ragApi.hfToken 있을 때만 생성)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+{{- if .Values.ragApi.hfToken }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rag-api-secrets
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api" "role" "rag-api") | nindent 4 }}
+type: Opaque
+stringData:
+  HF_TOKEN: {{ .Values.ragApi.hfToken | quote }}
+{{- end }}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §5. ServiceMonitor (manifests/34) — release: prom 라벨 매칭 (Day 7)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+{{- if .Values.ragApi.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rag-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api" "role" "rag-api") | nindent 4 }}
+    release: {{ .Values.ragApi.serviceMonitor.releaseLabel }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api") | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.ragApi.serviceMonitor.interval }}
+      scrapeTimeout: 10s
+{{- end }}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §6. HPA (manifests/35) — rag_chat_requests_per_second Pods 메트릭 (Day 8)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+{{- if .Values.ragApi.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rag-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "rag-api" "role" "rag-api") | nindent 4 }}
+    autoscaler: rps
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rag-api
+  minReplicas: {{ .Values.ragApi.hpa.minReplicas }}
+  maxReplicas: {{ .Values.ragApi.hpa.maxReplicas }}
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: {{ .Values.ragApi.hpa.metricName }}    # adapter 별칭 (rag_chat_total → _per_second)
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.ragApi.hpa.averageValue | quote }}
+  # vLLM HPA 와 동일한 비대칭 정책 — 두 HPA 정책 일관 유지 (architecture.md §3.13.3)
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.ragApi.hpa.scaleUpStabilization }}
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.ragApi.hpa.scaleDownStabilization }}
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+{{- end }}
+
+{{- end }}

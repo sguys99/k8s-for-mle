@@ -1,0 +1,24 @@
+{{/*
+templates/namespace.yaml — 캡스톤 namespace 1 종 (Day 1 manifests/00-namespace.yaml 매핑)
+
+본 차트의 모든 자원이 이 namespace 에 들어갑니다.
+`helm install ... --create-namespace` 와 함께 사용하면 차트가 namespace 도 함께 관리 — 단, 그 경우
+namespace 가 release 의 일부이므로 `helm uninstall` 시 namespace 도 삭제됩니다.
+
+⚠ 주의 — 명시적 namespace 매니페스트 vs --create-namespace 플래그 (lesson.md §8.4 결정 박스):
+  본 차트는 명시적 namespace 매니페스트를 *함께* 둡니다. 이유:
+    ① labels (purpose, course) 를 일관되게 부여 — `--create-namespace` 만으로는 라벨 부재
+    ② Day 1 의 raw 매니페스트와 동등 — `helm template ... | kubectl apply -f -` 결과가 raw apply 와 같음
+    ③ ResourceQuota / LimitRange (Phase 5 GitOps 시점) 를 같은 차트로 추가하기 쉬움
+
+학습자가 `helm install ... --create-namespace` 로 install 하면 K8s 가 먼저 namespace 를 만들고,
+그 다음 본 매니페스트는 *동일 namespace 의 라벨 갱신* 으로 동작 (idempotent).
+*/}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    purpose: capstone-rag-llm-serving
+    course: k8s-for-mle

@@ -1,0 +1,69 @@
+# values-prod.yaml — prod 환경 override (GKE T4 노드 풀 전제)
+#
+# 사용:
+#   helm install rag-llm helm/ -n rag-llm --create-namespace \
+#     -f helm/values-prod.yaml \
+#     --set ragApi.image.repository=docker.io/<user>/rag-api \
+#     --set indexing.imageRepository=docker.io/<user>/rag-indexer \
+#     --set indexing.gitRepo=https://github.com/<user>/k8s-for-mle.git
+#
+#   # Step 5: LoadBalancer IP 받은 후 host 갱신
+#   helm upgrade rag-llm helm/ -n rag-llm -f helm/values-prod.yaml \
+#     --set ingress.host=$(kubectl get ing rag-api -n rag-llm -o jsonpath='{.status.loadBalancer.ingress[0].ip}').nip.io
+#
+# prod 의 의도 (lesson.md §8.4 결정 박스):
+#   ・ vLLM 활성 + HPA on (maxReplicas=2 *체험형 학습 설계*)
+#   ・ Ingress 활성 (GCE + nip.io host)
+#   ・ ServiceMonitor 2 종 + Grafana dashboard CM + prometheus-adapter ConfigMap 활성
+#   ・ Day 9 부하 튜닝 결과 반영 — gpuMemoryUtilization 0.85 → 0.90 안전 상향
+#
+# 운영 vs 캡스톤 prod 의 차이:
+#   ・ 본 캡스톤 prod 는 *학습용* 이라 maxReplicas=2 (T4 노드 풀 1 대 → 두 번째 Pod Pending)
+#   ・ 진짜 운영은 노드 풀 size 와 maxReplicas 를 함께 늘리고 cluster-autoscaler 활성
+
+# ─ vLLM 활성 + HPA + ServiceMonitor + Day 9 튜닝 ──────────────────────────
+vllm:
+  enabled: true
+  gpuMemoryUtilization: "0.90"                 # Day 9 튜닝 결과 — baseline 0.85 → 안전 상향 1 회전 (architecture.md §3.14.2)
+  gpu:
+    enabled: true
+    count: 1
+  hpa:
+    enabled: true
+    minReplicas: 1                             # idle 시 1 Pod — vLLM cold start 5~10 분 회피
+    maxReplicas: 2                             # 학습 포인트 — 두 번째 Pod 는 Pending (자주 하는 실수 #24)
+    averageValue: "8"
+  serviceMonitor:
+    enabled: true                              # Day 7 패턴 — Prometheus Targets 에 vLLM /metrics 등록
+
+# ─ RAG API: replicas=2, HPA on, ServiceMonitor on ─────────────────────────
+ragApi:
+  replicas: 2                                  # Day 6 RollingUpdate maxUnavailable=0 일관 (다운타임 0)
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6                             # e2-medium 노드 1 대로는 schedule 한계 — 학습 단계에서 *몇 개까지 schedule 되는지* 관측
+    averageValue: "10"                         # Day 7 측정 12 RPS 의 80% 안전선
+  serviceMonitor:
+    enabled: true                              # Day 7 패턴 — Prometheus Targets 에 RAG API /metrics 등록 (replicas=2 라 endpoints 2)
+
+# ─ Ingress 활성 (GCE + nip.io) ─────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: gce                               # GKE 기본
+  # host 는 install 시점에는 빈 값 → templates/ingress.yaml 의 `required` 가 첫 install 차단.
+  # Step 5 에서 LoadBalancer IP 받은 후 `helm upgrade --set ingress.host=<IP>.nip.io` 로 갱신.
+  host: ""
+
+# ─ 모니터링 활성 (adapter ConfigMap + Grafana dashboard) ───────────────────
+monitoring:
+  prometheusAdapter:
+    enabled: true                              # 본 차트는 ConfigMap(values.yaml 동봉)만 생성. 별도 helm install 안내는 NOTES.txt
+    prometheusUrl: "http://prom-kube-prometheus-stack-prometheus.monitoring.svc:9090"
+  grafanaDashboard:
+    enabled: true                              # ConfigMap 1 장 → Grafana sidecar 가 ~30 초 안에 자동 import
+    namespace: monitoring
+
+# ─ 인덱싱: 활성 + CronWorkflow on ─────────────────────────────────────────
+# indexing.enabled / cron.enabled 모두 values.yaml 의 true 유지 — prod 에서는 매일 KST 03:00 자동 재인덱싱.
+# 학습자가 비용 절약하려면 `--set indexing.cron.enabled=false` 로 CronWorkflow 만 끄고 수동 `argo submit` 만.

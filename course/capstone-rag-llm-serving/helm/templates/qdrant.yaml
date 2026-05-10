@@ -1,0 +1,87 @@
+{{/*
+templates/qdrant.yaml — Qdrant Vector DB (StatefulSet + Headless Service)
+
+raw 매니페스트 매핑 (Day 1):
+  ・ manifests/10-qdrant-statefulset.yaml → 본 파일의 StatefulSet
+  ・ manifests/11-qdrant-service.yaml     → 본 파일의 Service (Headless, clusterIP: None)
+
+핵심 결정 (Day 1):
+  ① StatefulSet + volumeClaimTemplates — 인덱스 영속화. Pod 재시작 후에도 PVC 유지 (qdrant-storage-qdrant-0)
+  ② Headless Service (clusterIP: None) — ordinal DNS 발급 (qdrant-0.qdrant.rag-llm.svc.cluster.local)
+  ③ /readyz 와 /healthz 분리 — readiness 와 liveness 의 의미 구분
+  ④ replicas=1 (Day 1 결정, 향후 클러스터링 시 증가)
+
+본 차트의 컴포넌트 enabled 플래그:
+  qdrant.enabled=true (기본값) — values-dev.yaml 도 true 유지 (인덱싱 학습)
+*/}}
+{{- if .Values.qdrant.enabled -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "qdrant" "role" "vector-db") | nindent 4 }}
+spec:
+  # serviceName 은 아래 Service 의 이름 "qdrant" 와 정확히 일치 — ordinal DNS 발급의 핵심.
+  serviceName: qdrant
+  replicas: {{ .Values.qdrant.replicas }}
+  selector:
+    matchLabels:
+      {{- include "capstone-rag-llm.componentLabels" (dict "component" "qdrant") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "capstone-rag-llm.commonLabels" . | nindent 8 }}
+        {{- include "capstone-rag-llm.componentLabels" (dict "component" "qdrant" "role" "vector-db") | nindent 8 }}
+    spec:
+      containers:
+        - name: qdrant
+          image: "{{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}"
+          imagePullPolicy: {{ .Values.qdrant.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 6333 }
+            - { name: grpc, containerPort: 6334 }
+          # /readyz (컬렉션 메타 로드 완료) 와 /healthz (프로세스 살아있음) 분리 — Day 1 패턴
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.qdrant.resources | nindent 12 }}
+          volumeMounts:
+            - { name: qdrant-storage, mountPath: /qdrant/storage }
+  # volumeClaimTemplates — StatefulSet 의 핵심. 각 Pod 마다 PVC 1 개 자동 생성.
+  # 생성 PVC 이름: qdrant-storage-qdrant-0 (`<vct>-<sts>-<ord>`)
+  volumeClaimTemplates:
+    - metadata:
+        name: qdrant-storage
+      spec:
+        accessModes: [{{ .Values.qdrant.persistence.accessMode | quote }}]
+        storageClassName: {{ .Values.qdrant.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.qdrant.persistence.size }}
+---
+# Headless Service — ordinal DNS 발급 (clusterIP: None)
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "qdrant" "role" "vector-db") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "qdrant") | nindent 4 }}
+  ports:
+    - { name: http, port: 6333, targetPort: http }
+    - { name: grpc, port: 6334, targetPort: grpc }
+{{- end }}

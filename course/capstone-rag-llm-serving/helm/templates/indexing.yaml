@@ -1,0 +1,224 @@
+{{/*
+templates/indexing.yaml — Argo RBAC + CronWorkflow (Day 3)
+
+raw 매니페스트 매핑:
+  ・ manifests/49-argo-rbac.yaml             → 본 파일 §1 ServiceAccount + Role + RoleBinding
+  ・ manifests/50-indexing-workflow.yaml     → 본 차트는 *생성 안 함* (Workflow 는 일회성 인스턴스, lab 에서 `argo submit` 으로 실행)
+  ・ manifests/51-indexing-cronworkflow.yaml → 본 파일 §2 CronWorkflow (cron.enabled)
+
+핵심 결정 (Day 3 + Day 10):
+  ① Workflow vs CronWorkflow 분리 (lesson.md §8.4 결정 박스):
+     - Workflow (50): *일회성 인스턴스* — Helm install 시점에 자동 생성하면 비용 발생.
+                      본 차트는 RBAC 만 만들고, 학습자가 `argo submit` 으로 1 회 실행 (workflowOnInstall=false).
+     - CronWorkflow (51): *스케줄 정의* — 본 차트로 자동 배포 가능. 매일 KST 03:00 자동 재인덱싱.
+  ② Argo controller 는 별도 namespace `argo` 에 사전 설치 (의존 차트 미포함)
+  ③ Workflow Pod 의 ServiceAccount 가 pods/pods/log/workflowtaskresults 권한 필요 (자주 하는 실수 #7)
+  ④ 단일 PVC + 두 mountPath (/docs + /data) — RWO 노드 제약 통합 (architecture.md §3.7)
+
+⚠ 주의 — CronWorkflow CRD 가 클러스터에 등록되지 않았으면 install 실패:
+  사전 조건: `kubectl apply -n argo -f https://github.com/argoproj/argo-workflows/releases/download/v3.5.7/quick-start-minimal.yaml`
+  CRD 부재 시 `Error: unable to recognize "...": no matches for kind "CronWorkflow"` (NOTES.txt 안내)
+*/}}
+{{- if .Values.indexing.enabled -}}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §1. Argo RBAC (manifests/49) — 항상 생성 (CronWorkflow 가 사용)
+     ═══════════════════════════════════════════════════════════════════════ */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.indexing.serviceAccountName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "argo-workflow" "role" "indexing-pipeline") | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.indexing.serviceAccountName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "argo-workflow" "role" "indexing-pipeline") | nindent 4 }}
+rules:
+  # 자식 Pod 생성/조회/감시 — Workflow Pod 가 자식 Pod 을 생성할 때 호출
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # argo logs 명령이 자식 Pod stdout 읽을 때 필요
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  # 단계 사이의 결과(parameters/artifacts) 를 controller 가 보관하는 CRD
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.indexing.serviceAccountName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "argo-workflow" "role" "indexing-pipeline") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.indexing.serviceAccountName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.indexing.serviceAccountName }}
+    namespace: {{ .Values.namespace }}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §2. CronWorkflow (manifests/51) — 매일 KST 03:00 자동 재인덱싱
+     ═══════════════════════════════════════════════════════════════════════ */}}
+{{- if .Values.indexing.cron.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: rag-indexing-daily
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "argo-workflow" "role" "indexing-pipeline") | nindent 4 }}
+spec:
+  schedule: {{ .Values.indexing.cron.schedule | quote }}
+  timezone: {{ .Values.indexing.cron.timezone | quote }}
+  concurrencyPolicy: {{ .Values.indexing.cron.concurrencyPolicy }}     # idempotent upsert 라 Replace 안전 (Day 3 결정)
+  successfulJobsHistoryLimit: {{ .Values.indexing.cron.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.indexing.cron.failedJobsHistoryLimit }}
+  startingDeadlineSeconds: {{ .Values.indexing.cron.startingDeadlineSeconds }}
+
+  workflowSpec:
+    entrypoint: rag-indexing
+    serviceAccountName: {{ .Values.indexing.serviceAccountName }}
+
+    arguments:
+      parameters:
+        - { name: git-repo,        value: {{ .Values.indexing.gitRepo | quote }} }
+        - { name: git-branch,      value: {{ .Values.indexing.gitBranch | quote }} }
+        - { name: collection-name, value: {{ .Values.indexing.collection | quote }} }
+        - { name: chunk-size,      value: {{ .Values.indexing.chunkSize | quote }} }
+        - { name: chunk-overlap,   value: {{ .Values.indexing.chunkOverlap | quote }} }
+        - { name: embedding-model, value: {{ .Values.indexing.embeddingModel | quote }} }
+
+    # 단일 PVC + 두 mountPath (/docs + /data) — Day 3 결정 (architecture.md §3.7)
+    volumeClaimTemplates:
+      - metadata: { name: pipeline-data }
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources: { requests: { storage: 2Gi } }
+    volumeClaimGC:
+      strategy: OnWorkflowCompletion           # workflow 종료 시 PVC 자동 정리
+
+    templates:
+
+      # DAG: git-clone → load-docs → chunk → embed → upsert (5 step)
+      - name: rag-indexing
+        dag:
+          tasks:
+            - { name: git-clone, template: git-clone-step }
+            - { name: load-docs, template: pipeline-step, dependencies: [git-clone],
+                arguments: { parameters: [ { name: subcommand, value: "load-docs" }, { name: extra-args, value: "" } ] } }
+            - { name: chunk,     template: pipeline-step, dependencies: [load-docs],
+                arguments: { parameters: [ { name: subcommand, value: "chunk" },     { name: extra-args, value: "--chunk-size {{`{{workflow.parameters.chunk-size}}`}} --chunk-overlap {{`{{workflow.parameters.chunk-overlap}}`}}" } ] } }
+            - { name: embed,     template: pipeline-step, dependencies: [chunk],
+                arguments: { parameters: [ { name: subcommand, value: "embed" },     { name: extra-args, value: "--model {{`{{workflow.parameters.embedding-model}}`}}" } ] } }
+            - { name: upsert,    template: pipeline-step, dependencies: [embed],
+                arguments: { parameters: [ { name: subcommand, value: "upsert" },    { name: extra-args, value: "--collection {{`{{workflow.parameters.collection-name}}`}}" } ] } }
+
+      # step 1: git-clone (alpine/git, --depth 1)
+      - name: git-clone-step
+        container:
+          image: alpine/git:2.45.2
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "[$(date -Iseconds)] cloning {{`{{workflow.parameters.git-repo}}`}} (branch {{`{{workflow.parameters.git-branch}}`}}) -> /docs/k8s-for-mle"
+              git clone --depth 1 --branch "{{`{{workflow.parameters.git-branch}}`}}" \
+                "{{`{{workflow.parameters.git-repo}}`}}" /docs/k8s-for-mle
+              echo "[$(date -Iseconds)] clone done."
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+          volumeMounts:
+            - { name: pipeline-data, mountPath: /docs }
+
+      # step 2~5 공유 template (rag-indexer 이미지 + subcommand 인자 분기)
+      - name: pipeline-step
+        inputs:
+          parameters:
+            - { name: subcommand }
+            - { name: extra-args }
+        container:
+          image: "{{ .Values.indexing.imageRepository }}:{{ .Values.indexing.imageTag }}"
+          imagePullPolicy: Always
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "[$(date -Iseconds)] step={{`{{inputs.parameters.subcommand}}`}} args={{`{{inputs.parameters.extra-args}}`}}"
+              python /app/pipeline.py "{{`{{inputs.parameters.subcommand}}`}}" {{`{{inputs.parameters.extra-args}}`}}
+          env:
+            - { name: DOCS_ROOT,         value: "/docs/k8s-for-mle/course" }
+            - { name: ROADMAP_PATH,      value: "/docs/k8s-for-mle/docs/study-roadmap.md" }
+            - { name: PIPELINE_DATA_DIR, value: "/data" }
+            - { name: QDRANT_URL,        value: "http://qdrant.{{ .Values.namespace }}.svc.cluster.local:6333" }
+            - { name: EMBED_MODEL,       value: {{ .Values.indexing.embeddingModel | quote }} }
+            - { name: QDRANT_COLLECTION, value: {{ .Values.indexing.collection | quote }} }
+            - { name: HF_HOME,           value: "/data/hf-cache" }
+          resources:
+            requests: { cpu: "200m", memory: "512Mi" }
+            limits:   { cpu: "1500m", memory: "2Gi" }
+          volumeMounts:
+            - { name: pipeline-data, mountPath: /docs }
+            - { name: pipeline-data, mountPath: /data }
+{{- end }}
+
+{{/* ═══════════════════════════════════════════════════════════════════════
+     §3. (옵션) Workflow 1 회 즉시 실행 — workflowOnInstall=true 시
+     ═══════════════════════════════════════════════════════════════════════
+     본 차트 install 시점에 인덱싱을 *즉시* 시작하고 싶을 때 활성화.
+     기본은 false (lesson.md §8.4 결정 박스 — 비용 통제 우선).
+     활성화 시 helm install 시점에 generateName Workflow 1 개 자동 생성 →
+     git-clone → ... → upsert 5 step 실행 후 자동 종료.
+     */}}
+{{- if .Values.indexing.workflowOnInstall }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: rag-indexing-helm-
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capstone-rag-llm.commonLabels" . | nindent 4 }}
+    {{- include "capstone-rag-llm.componentLabels" (dict "component" "argo-workflow" "role" "indexing-pipeline") | nindent 4 }}
+spec:
+  entrypoint: rag-indexing
+  serviceAccountName: {{ .Values.indexing.serviceAccountName }}
+  arguments:
+    parameters:
+      - { name: git-repo,        value: {{ .Values.indexing.gitRepo | quote }} }
+      - { name: git-branch,      value: {{ .Values.indexing.gitBranch | quote }} }
+      - { name: collection-name, value: {{ .Values.indexing.collection | quote }} }
+      - { name: chunk-size,      value: {{ .Values.indexing.chunkSize | quote }} }
+      - { name: chunk-overlap,   value: {{ .Values.indexing.chunkOverlap | quote }} }
+      - { name: embedding-model, value: {{ .Values.indexing.embeddingModel | quote }} }
+  volumeClaimTemplates:
+    - metadata: { name: pipeline-data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }
+  volumeClaimGC:
+    strategy: OnWorkflowCompletion
+  # workflowSpec 의 templates 는 위 CronWorkflow 의 workflowSpec.templates 와 *동일* —
+  # DRY 관점에서는 WorkflowTemplate 추출이 정석이지만 캡스톤 학습 단순성 우선 (Day 3 결정 박스 ④).
+  # 학습자가 이 분기를 사용하는 빈도는 낮음 (대부분 `argo submit` 으로 명시적 실행).
+{{- end }}
+
+{{- end }}

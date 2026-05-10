@@ -1,0 +1,46 @@
+# 캡스톤 통합 Helm 차트 메타데이터
+# Day 1~9 의 21 개 raw 매니페스트(00-namespace ~ 61-grafana-rag-dashboard)를 단일 차트로 묶고,
+# values-dev.yaml / values-prod.yaml 로 환경 차이만 분리한 결과입니다.
+#
+# 본 차트의 templates/ 7 종 ↔ raw 매니페스트 매핑 (lesson.md §8.1 표 참조):
+#   templates/namespace.yaml  ← manifests/00-namespace.yaml
+#   templates/qdrant.yaml     ← 10 (StatefulSet) + 11 (Headless Service)
+#   templates/vllm.yaml       ← 20 + 21 + 22 + 23 + 24 (ServiceMonitor) + 25 (HPA)        — 6 매니페스트
+#   templates/rag-api.yaml    ← 30 + 31 + 32 (ConfigMap) + 33 (Secret) + 34 (SM) + 35 (HPA) — 6 매니페스트
+#   templates/ingress.yaml    ← 40
+#   templates/monitoring.yaml ← 60 (prometheus-adapter values) + 61 (Grafana dashboard CM)
+#   templates/indexing.yaml   ← 49 (Argo RBAC) + 50 (Workflow) + 51 (CronWorkflow)
+#
+# 두 가지 버전:
+#   ・ version    = 차트 자체의 버전 (SemVer). templates 또는 values.yaml 변경 시 올립니다.
+#   ・ appVersion = 본 차트가 배포하는 캡스톤 시스템의 버전. RAG API 이미지 태그와 일치시키는 것이 운영 표준.
+# 두 버전은 독립이며, Day 9 부하 튜닝 결과(--gpu-memory-utilization=0.90)는 차트 자체가 아닌 values 변경이라 version 만 갱신됩니다.
+
+apiVersion: v2                                 # Helm v3 차트는 항상 v2
+name: capstone-rag-llm
+description: Capstone RAG chatbot + LLM serving — vLLM(phi-2) + Qdrant + RAG API + Argo + monitoring 통합 차트 (Day 10)
+type: application                              # library 가 아닌 일반 차트
+
+version: 0.1.0                                 # 차트 버전 — Phase 5 GitOps 통합 시 0.2.0
+appVersion: "1.0.0"                            # 캡스톤 시스템 버전 — RAG API 이미지 태그 0.1.0 과 별개로 통합 시스템 버전
+
+keywords:
+  - rag
+  - llm
+  - vllm
+  - qdrant
+  - capstone
+  - ml-on-k8s
+
+maintainers:
+  - name: k8s-for-mle learner
+
+# 의존 차트 안내 (본 차트는 의존 차트 없음 — 학습자가 별도 helm install 로 사전 설치):
+#   ・ kube-prometheus-stack    : Day 7 에 `helm install prom prometheus-community/kube-prometheus-stack -n monitoring` 로 사전 설치
+#   ・ argo-workflows           : Day 3 에 `kubectl apply -n argo -f https://github.com/argoproj/argo-workflows/.../quick-start-minimal.yaml` 로 사전 설치
+#   ・ prometheus-adapter       : Day 8 에 `helm install prometheus-adapter prometheus-community/prometheus-adapter \
+#                                  -f manifests/60-prometheus-adapter-values.yaml -n monitoring` 로 사전 설치
+# 의존 차트로 묶지 않은 이유 (lesson.md §8.4 결정 박스):
+#   ① 세 의존이 모두 *클러스터 단일 인스턴스* 라 캡스톤 release 마다 새로 설치되면 충돌
+#   ② 본 차트의 install/upgrade/rollback 사이클이 빨라야 학습 가치가 있음 (의존 포함 시 5+ 분 → 30 초 이하)
+#   ③ Phase 3-01 의 Helm 학습 누적성 — 본 차트는 *Phase 2 매니페스트 패키징* 역할에 집중

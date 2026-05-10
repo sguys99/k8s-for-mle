@@ -1,0 +1,53 @@
+# values-dev.yaml — dev 환경 override
+#
+# 사용:
+#   helm install rag-llm helm/ -n rag-llm --create-namespace \
+#     -f helm/values-dev.yaml \
+#     --set ragApi.image.repository=docker.io/<user>/rag-api
+#
+# 본 파일은 values.yaml 과의 *차이만* 적습니다 — 다른 키는 values.yaml 의 기본값이 그대로 사용됩니다.
+#
+# dev 의 의도 (lesson.md §8.4 결정 박스 ②):
+#   ・ vLLM 비활성화 — GPU 노드 풀 없는 학습자도 Helm 흐름(install/upgrade/rollback) 자체 학습
+#   ・ HPA / Ingress / 모니터링 모두 비활성 — *최소 구성으로 Pod 가 다 뜨는지* 만 확인
+#   ・ 인덱싱은 활성 — Qdrant 단독으로 Day 2~3 결과를 검증 가능
+#   ・ ragApi 는 replicas=1 + readiness 가 vLLM 없으면 not_ready 응답 — Day 7 envFrom 학습 가치를 dev 에서도 살림
+#
+# dev 환경에서 RAG API 의 동작:
+#   /healthz → 200 (프로세스만 살아있음)
+#   /ready   → 200 (e5-small 로딩 후)
+#   /chat    → 503 not_ready (vLLM 호출 실패) — 의도된 결과. *503 에러를 학습자가 직접 보는 것이 dev 학습 가치*
+#
+# CPU 환경에서 vLLM 본 구현은 §11 확장 아이디어로 미룸 (Phase 5 또는 capstone v2).
+
+# ─ vLLM 전체 비활성 ────────────────────────────────────────────────────────
+vllm:
+  enabled: false                               # 6 매니페스트(Deployment/PVC/Service/Secret/SM/HPA) 모두 렌더 안 됨
+  # 아래 키들은 enabled=false 로 무관하지만 *명시* 로 의도 표현 (코드 리뷰에서 보임)
+  hpa:
+    enabled: false
+  serviceMonitor:
+    enabled: false
+
+# ─ RAG API: replicas=1, HPA off ────────────────────────────────────────────
+ragApi:
+  replicas: 1                                  # dev 는 단일 Pod (가용성 학습은 prod 의 몫)
+  hpa:
+    enabled: false                             # HPA 학습은 prod (Day 8) 환경
+  serviceMonitor:
+    enabled: false                             # ServiceMonitor 학습도 prod
+
+# ─ Ingress 비활성 ──────────────────────────────────────────────────────────
+ingress:
+  enabled: false                               # dev 는 외부 노출 안 함 (kubectl port-forward 로 검증)
+
+# ─ 모니터링 비활성 ─────────────────────────────────────────────────────────
+monitoring:
+  prometheusAdapter:
+    enabled: false
+  grafanaDashboard:
+    enabled: false
+
+# ─ 인덱싱은 유지 (Qdrant + Argo 학습) ─────────────────────────────────────
+# indexing.enabled 는 values.yaml 의 true 그대로 — Qdrant 가 살아있고 Argo controller 가 설치됐다면
+# `argo submit` 으로 인덱싱 1 회 실행 가능. dev 에서는 chunk 수가 적으므로 1~2 분에 끝남.
